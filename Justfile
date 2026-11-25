@@ -20,6 +20,10 @@ test-gpu:
     cargo test -p gpui-nightshade --locked -- --include-ignored
     cargo test -p gpui-nightshade-components --locked -- --include-ignored
 
+test-shared frames="1200" port="19790":
+    cargo build -p gpui-nightshade-viewer --locked
+    pwsh -NoLogo -NoProfile -File scripts/verify-windows-shared.ps1 -Frames {{frames}} -Port {{port}}
+
 headless:
     cargo run --locked --example headless
 

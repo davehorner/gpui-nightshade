@@ -74,6 +74,7 @@ impl Worker {
             .name("nightshade-render".into())
             .spawn(move || {
                 if let Err(error) = run(&thread_state, &factory) {
+                    eprintln!("Nightshade presentation worker stopped: {error}");
                     let mut state = thread_state.0.lock().unwrap();
                     state.error = Some(error.to_string());
                     state.changed = true;
@@ -207,7 +208,7 @@ impl Transport {
         match self {
             Self::Readback(ring) => ring.in_flight(),
             #[cfg(target_os = "windows")]
-            Self::Shared(_) => 0,
+            Self::Shared(ring) => ring.pending_count(),
         }
     }
 }
@@ -256,8 +257,32 @@ fn run(
     let mut pick_sequence = None;
     let mut pick_pending = false;
     let mut last_camera = None;
+    #[cfg(target_os = "windows")]
+    let mut retired_shared: Vec<crate::windows::SharedRing> = Vec::new();
+    let trace_gpu = std::env::var_os("GPUI_NIGHTSHADE_TRACE_GPU").is_some();
+    let mut published_frames = 0u64;
+    let started = std::time::Instant::now();
+    let mut last_trace = started;
     loop {
         transport.check_device()?;
+        #[cfg(target_os = "windows")]
+        {
+            for ring in &retired_shared {
+                ring.check_device()?;
+            }
+            retired_shared.retain(|ring| !ring.retired_idle());
+        }
+        if trace_gpu && gpu && last_trace.elapsed() >= Duration::from_secs(5) {
+            let state = shared.0.lock().unwrap();
+            eprintln!(
+                "Shared GPU heartbeat: visible={}, submitted={sequence}, published={published_frames}, pending={}, can_submit={}, elapsed={:.1}s",
+                state.visible,
+                transport.in_flight(),
+                transport.can_submit(),
+                started.elapsed().as_secs_f64()
+            );
+            last_trace = std::time::Instant::now();
+        }
         let (request, revision, fallback, input_pending, visible) = {
             let mut state = shared.0.lock().unwrap();
             while !state.quit
@@ -302,14 +327,26 @@ fn run(
             }
             continue;
         }
-        if gpu && fallback && transport.can_resize() {
-            transport = Transport::new(
+        #[cfg(target_os = "windows")]
+        let retirement_capacity = retired_shared.len() < 2;
+        #[cfg(not(target_os = "windows"))]
+        let retirement_capacity = true;
+        if gpu && fallback && transport.can_resize() && retirement_capacity {
+            let replacement = Transport::new(
                 host.as_ref(),
                 host.renderer().surface_config.width,
                 host.renderer().surface_config.height,
                 generation,
                 false,
             )?;
+            let previous = std::mem::replace(&mut transport, replacement);
+            #[cfg(not(target_os = "windows"))]
+            drop(previous);
+            #[cfg(target_os = "windows")]
+            if let Transport::Shared(mut ring) = previous {
+                ring.retire();
+                retired_shared.push(ring);
+            }
             gpu = false;
             applied = 0;
         }
@@ -320,7 +357,7 @@ fn run(
             );
         if (revision != applied || host.continuous() || input_pending)
             && transport.can_submit()
-            && (!resize_requested || transport.can_resize())
+            && (!resize_requested || (transport.can_resize() && retirement_capacity))
         {
             if request.width == 0 || request.height == 0 {
                 applied = revision;
@@ -342,7 +379,14 @@ fn run(
                     gpu,
                 )?;
                 host.resize(request.width, request.height)?;
-                transport = replacement;
+                let previous = std::mem::replace(&mut transport, replacement);
+                #[cfg(not(target_os = "windows"))]
+                drop(previous);
+                #[cfg(target_os = "windows")]
+                if let Transport::Shared(mut ring) = previous {
+                    ring.retire();
+                    retired_shared.push(ring);
+                }
             }
             let camera = gpui_nightshade::host::CameraPose {
                 yaw: request.yaw,
@@ -386,16 +430,7 @@ fn run(
                     {
                         applied = revision;
                         sequence += 1;
-                        let mut state = shared.0.lock().unwrap();
-                        state.image = Some(Arc::new(RenderImage::from_external(frame)));
-                        state.changed = true;
-                        state.diagnostics = format!(
-                            "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
-                            host.renderer().gpu_profile.name,
-                            request.width,
-                            request.height,
-                            sequence
-                        );
+                        ring.queue_frame(frame);
                     } else {
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -403,6 +438,31 @@ fn run(
             }
         }
         host.renderer().device.poll(wgpu::PollType::Poll)?;
+        #[cfg(target_os = "windows")]
+        if let Transport::Shared(ring) = &mut transport
+            && let Some(frame) = ring.take_ready()
+        {
+            published_frames += 1;
+            if trace_gpu && published_frames.is_multiple_of(300) {
+                eprintln!(
+                    "Shared GPU progress: published={published_frames}, submitted={sequence}, pending={}, size={}x{}, elapsed={:.1}s",
+                    ring.pending_count(),
+                    frame.width,
+                    frame.height,
+                    started.elapsed().as_secs_f64()
+                );
+            }
+            let mut state = shared.0.lock().unwrap();
+            state.diagnostics = format!(
+                "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
+                host.renderer().gpu_profile.name,
+                frame.width,
+                frame.height,
+                sequence
+            );
+            state.image = Some(Arc::new(RenderImage::from_external(frame)));
+            state.changed = true;
+        }
         if let Some(entity) = host.poll_pick() {
             pick_pending = false;
             let mut state = shared.0.lock().unwrap();

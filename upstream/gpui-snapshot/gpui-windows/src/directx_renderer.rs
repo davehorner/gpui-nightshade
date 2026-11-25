@@ -269,6 +269,11 @@ impl DirectXRenderer {
                 .swap_chain
                 .Present(0, DXGI_PRESENT(0))
         };
+        if result.is_err() {
+            if let Some(devices) = &self.devices {
+                crate::shared_texture::report_device_failure(&devices.device);
+            }
+        }
         result.ok().context("Presenting swap chain failed")
     }
 
@@ -830,9 +835,7 @@ impl DirectXRenderer {
             return Ok(());
         };
         let external = self.atlas.external_texture(texture_id);
-        if let Some(external) = &external {
-            external.before_draw()?;
-        }
+        if let Some(external) = &external { external.before_draw()?; }
         self.pipelines.poly_sprites.draw_range_with_texture(
             &devices.device_context,
             &texture_view,
@@ -844,9 +847,7 @@ impl DirectXRenderer {
             start as u32,
             len as u32,
         )?;
-        if let Some(external) = &external {
-            external.after_draw()?;
-        }
+        if let Some(external) = &external { external.after_draw()?; }
         Ok(())
     }
 

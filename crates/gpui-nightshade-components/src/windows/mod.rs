@@ -1,27 +1,38 @@
 //! Unsafe D3D interop is confined to this module and GPUI's shared_texture importer.
 use gpui_nightshade::wgpu;
-use gpui_windows::shared_texture::{SharedHandle, SharedTexture};
+use gpui_windows::shared_texture::{SharedFrameOwner, SharedHandle, SharedTexture};
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
 
 struct Slot {
     texture: wgpu::Texture,
-    fence: ID3D12Fence,
+    ready_fence: ID3D12Fence,
+    consumed_fence: ID3D12Fence,
     texture_handle: Arc<SharedHandle>,
-    fence_handle: Arc<SharedHandle>,
+    ready_handle: Arc<SharedHandle>,
+    consumed_handle: Arc<SharedHandle>,
     leased: Weak<SharedTexture>,
-    sampled: Arc<AtomicBool>,
+    last_read: Arc<AtomicU64>,
     value: u64,
 }
+#[derive(Debug)]
+struct FrameResources {
+    _texture: wgpu::Texture,
+    _ready: ID3D12Fence,
+    _consumed: ID3D12Fence,
+}
+impl SharedFrameOwner for FrameResources {}
 pub struct SharedRing {
     slots: Vec<Slot>,
     queue: ID3D12CommandQueue,
+    device: ID3D12Device,
     luid: u64,
     width: u32,
     height: u32,
+    pending: Vec<Arc<SharedTexture>>,
 }
 impl SharedRing {
     pub fn new(
@@ -75,13 +86,28 @@ impl SharedRing {
                 )?;
                 resource.ok_or("CreateCommittedResource returned no resource")?
             };
-            let fence: ID3D12Fence = unsafe { raw.CreateFence(0, D3D12_FENCE_FLAG_SHARED)? };
+            let ready_fence: ID3D12Fence = unsafe { raw.CreateFence(0, D3D12_FENCE_FLAG_SHARED)? };
+            let consumed_fence: ID3D12Fence =
+                unsafe { raw.CreateFence(0, D3D12_FENCE_FLAG_SHARED)? };
             // NT handles are owned by SharedHandle and shared by frames only through Arc.
             let texture_handle = Arc::new(unsafe {
                 SharedHandle::from_owned(raw.CreateSharedHandle(&resource, None, 0x10000000, None)?)
             });
-            let fence_handle = Arc::new(unsafe {
-                SharedHandle::from_owned(raw.CreateSharedHandle(&fence, None, 0x10000000, None)?)
+            let ready_handle = Arc::new(unsafe {
+                SharedHandle::from_owned(raw.CreateSharedHandle(
+                    &ready_fence,
+                    None,
+                    0x10000000,
+                    None,
+                )?)
+            });
+            let consumed_handle = Arc::new(unsafe {
+                SharedHandle::from_owned(raw.CreateSharedHandle(
+                    &consumed_fence,
+                    None,
+                    0x10000000,
+                    None,
+                )?)
             });
             let extent = wgpu::Extent3d {
                 width,
@@ -115,48 +141,76 @@ impl SharedRing {
             };
             slots.push(Slot {
                 texture,
-                fence,
+                ready_fence,
+                consumed_fence,
                 texture_handle,
-                fence_handle,
+                ready_handle,
+                consumed_handle,
                 leased: Weak::new(),
-                sampled: Arc::new(AtomicBool::new(false)),
+                last_read: Arc::new(AtomicU64::new(0)),
                 value: 0,
             });
         }
         Ok(Self {
             slots,
             queue,
+            device: raw.clone(),
             luid,
             width,
             height,
+            pending: Vec::new(),
         })
     }
 
     pub fn check_device(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if self
-            .slots
-            .iter()
-            .any(|slot| unsafe { slot.fence.GetCompletedValue() == u64::MAX })
-        {
-            return Err("D3D12 device was removed; shared presentation stopped".into());
+        if let Some((index, slot)) = self.slots.iter().enumerate().find(|(_, slot)| unsafe {
+            slot.ready_fence.GetCompletedValue() == u64::MAX
+                || slot.consumed_fence.GetCompletedValue() == u64::MAX
+        }) {
+            return Err(format!(
+                "Shared fence abandoned: slot {index}, producer {:?}, consumer {:?}, ready {}, read {}, leases {}; D3D12 status: {:?}",
+                unsafe { slot.ready_fence.GetCompletedValue() }, unsafe { slot.consumed_fence.GetCompletedValue() }, slot.value, slot.last_read.load(Ordering::Acquire), slot.leased.strong_count(), unsafe { self.device.GetDeviceRemovedReason() }
+            )
+            .into());
         }
         Ok(())
     }
     pub fn producer_idle(&self) -> bool {
-        self.slots
-            .iter()
-            .all(|slot| unsafe { slot.fence.GetCompletedValue() >= slot.value.saturating_sub(1) })
-    }
-    pub fn can_submit(&self) -> bool {
-        self.slots.iter().any(|slot| {
-            let required = if slot.sampled.load(Ordering::Acquire) {
-                slot.value
-            } else {
-                slot.value.saturating_sub(1)
-            };
-            slot.leased.strong_count() == 0 && unsafe { slot.fence.GetCompletedValue() >= required }
+        self.slots.iter().all(|slot| unsafe {
+            completed_at_least(slot.ready_fence.GetCompletedValue(), slot.value)
         })
     }
+    pub fn can_submit(&self) -> bool {
+        self.slots.iter().any(Slot::available)
+    }
+    pub fn queue_frame(&mut self, frame: Arc<SharedTexture>) {
+        self.pending.push(frame);
+        debug_assert!(self.pending.len() <= 3);
+    }
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+    pub fn retire(&mut self) {
+        self.pending.clear();
+    }
+    pub fn retired_idle(&self) -> bool {
+        self.slots.iter().all(Slot::available)
+    }
+    /// Publish only completed copies. GPUI must not park its presentation queue
+    /// behind a producer frame that is still rendering/compiling on another device.
+    pub fn take_ready(&mut self) -> Option<Arc<SharedTexture>> {
+        let index = self.pending.iter().rposition(|frame| {
+            self.slots.iter().any(|slot| {
+                slot.texture_handle.raw() == frame.texture_handle.raw()
+                    && unsafe {
+                        let completed = slot.ready_fence.GetCompletedValue();
+                        completed != u64::MAX && completed >= frame.ready_value
+                    }
+            })
+        })?;
+        self.pending.drain(..=index).next_back()
+    }
+
     pub fn copy_frame(
         &mut self,
         device: &wgpu::Device,
@@ -169,24 +223,12 @@ impl SharedRing {
         {
             return Err("shared copy source is incompatible".into());
         }
-        let Some(slot) = self.slots.iter_mut().find(|slot| {
-            if slot.leased.strong_count() != 0 {
-                return false;
-            }
-            let required = if slot.sampled.load(Ordering::Acquire) {
-                slot.value
-            } else {
-                slot.value.saturating_sub(1)
-            };
-            // No CPU wait: unavailable slots provide backpressure.
-            unsafe { slot.fence.GetCompletedValue() >= required }
-        }) else {
+        let Some(slot) = self.slots.iter_mut().find(|slot| slot.available()) else {
             return Ok(None);
         };
-        slot.sampled = Arc::new(AtomicBool::new(false));
         slot.value = slot
             .value
-            .checked_add(2)
+            .checked_add(1)
             .ok_or("shared fence timeline exhausted")?;
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_texture_to_texture(
@@ -210,19 +252,241 @@ impl SharedRing {
         );
         queue.submit([encoder.finish()]);
         unsafe {
-            self.queue.Signal(&slot.fence, slot.value - 1)?;
+            self.queue.Signal(&slot.ready_fence, slot.value)?;
         }
         let frame = Arc::new(SharedTexture {
+            producer_owner: Arc::new(FrameResources {
+                _texture: slot.texture.clone(),
+                _ready: slot.ready_fence.clone(),
+                _consumed: slot.consumed_fence.clone(),
+            }),
             texture_handle: slot.texture_handle.clone(),
-            fence_handle: slot.fence_handle.clone(),
+            ready_fence_handle: slot.ready_handle.clone(),
+            consumed_fence_handle: slot.consumed_handle.clone(),
             adapter_luid: self.luid,
             width: self.width,
             height: self.height,
-            ready_value: slot.value - 1,
-            done_value: slot.value,
-            sampled: slot.sampled.clone(),
+            ready_value: slot.value,
+            last_read: slot.last_read.clone(),
         });
         slot.leased = Arc::downgrade(&frame);
         Ok(Some(frame))
+    }
+}
+
+impl Slot {
+    fn available(&self) -> bool {
+        // Leases stop future imports; the consumer timeline covers queued reads.
+        self.leased.strong_count() == 0
+            && unsafe {
+                completed_at_least(self.ready_fence.GetCompletedValue(), self.value)
+                    && completed_at_least(
+                        self.consumed_fence.GetCompletedValue(),
+                        self.last_read.load(Ordering::Acquire),
+                    )
+            }
+    }
+}
+
+fn completed_at_least(completed: u64, required: u64) -> bool {
+    completed != u64::MAX && completed >= required
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_nightshade::host::SceneHost;
+    use std::time::{Duration, Instant};
+    use windows::{
+        Win32::{
+            Foundation::{HMODULE, LUID},
+            Graphics::{Direct3D::*, Direct3D11::*, Dxgi::*},
+        },
+        core::Interface,
+    };
+
+    fn wait(fence: &ID3D12Fence, value: u64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let completed = unsafe { fence.GetCompletedValue() };
+            assert_ne!(completed, u64::MAX, "device lost");
+            if completed >= value {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fence {completed} did not reach {value}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
+    fn reuse_waits_for_last_consumer_read_and_timelines_do_not_rewind() {
+        let host = pollster::block_on(SceneHost::cube_with_backends(64, 64, wgpu::Backends::DX12))
+            .unwrap();
+        let mut ring = SharedRing::new(&host.renderer.device, 64, 64).unwrap();
+        let factory: IDXGIFactory4 =
+            unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }.unwrap();
+        let adapter: IDXGIAdapter = unsafe {
+            factory.EnumAdapterByLuid(LUID {
+                LowPart: ring.luid as u32,
+                HighPart: (ring.luid >> 32) as i32,
+            })
+        }
+        .unwrap();
+        let mut device = None;
+        let mut context = None;
+        unsafe {
+            D3D11CreateDevice(
+                &adapter,
+                D3D_DRIVER_TYPE_UNKNOWN,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+        }
+        .unwrap();
+        let device: ID3D11Device5 = device.unwrap().cast().unwrap();
+        let context: ID3D11DeviceContext4 = context.unwrap().cast().unwrap();
+        let gate: ID3D12Fence =
+            unsafe { ring.device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }.unwrap();
+        unsafe { ring.queue.Wait(&gate, 1) }.unwrap();
+        let frame = ring
+            .copy_frame(
+                &host.renderer.device,
+                &host.renderer.queue,
+                host.renderer.external_output.as_ref().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        ring.queue_frame(frame.clone());
+        let withheld = ring.take_ready().is_none();
+        // Always release the queue before asserting, so a test failure cannot strand it.
+        unsafe { gate.Signal(1) }.unwrap();
+        assert!(
+            withheld,
+            "an unfinished copy must not enter the GPUI compositor"
+        );
+        wait(&ring.slots[0].ready_fence, frame.ready_value);
+        let published = ring.take_ready().unwrap();
+        assert!(Arc::ptr_eq(&frame, &published));
+        drop(published);
+        let mut ready = None;
+        let mut consumed = None;
+        let (consumer_texture, consumer_owner) = gpui_windows::shared_texture::import(
+            &device.cast::<ID3D11Device>().unwrap(),
+            &context.cast::<ID3D11DeviceContext>().unwrap(),
+            frame.clone(),
+        )
+        .unwrap();
+        unsafe {
+            device
+                .OpenSharedFence::<ID3D11Fence>(frame.ready_fence_handle.raw(), &mut ready)
+                .unwrap();
+            device
+                .OpenSharedFence::<ID3D11Fence>(frame.consumed_fence_handle.raw(), &mut consumed)
+                .unwrap();
+            context
+                .Wait(ready.as_ref().unwrap(), frame.ready_value)
+                .unwrap();
+            let texture = consumer_texture;
+            let mut staging = None;
+            device
+                .CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        Width: 64,
+                        Height: 64,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
+                        Usage: D3D11_USAGE_STAGING,
+                        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                        ..Default::default()
+                    },
+                    None,
+                    Some(&mut staging),
+                )
+                .unwrap();
+            let staging = staging.unwrap();
+            context.CopyResource(&staging, &texture);
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .unwrap();
+            let mut colors = std::collections::HashSet::new();
+            for row in 0..64 {
+                let bytes = std::slice::from_raw_parts(
+                    mapped
+                        .pData
+                        .cast::<u8>()
+                        .add(row * mapped.RowPitch as usize),
+                    64 * 4,
+                );
+                for pixel in bytes.as_chunks::<4>().0 {
+                    colors.insert([pixel[0], pixel[1], pixel[2]]);
+                }
+            }
+            context.Unmap(&staging, 0);
+            assert!(
+                colors.len() > 8,
+                "D3D11 must see the GPU-rendered cube pixels"
+            );
+            context.Signal(consumed.as_ref().unwrap(), 1).unwrap();
+            context.Flush();
+        }
+        frame.last_read.store(1, Ordering::Release);
+        wait(&ring.slots[0].consumed_fence, 1);
+        drop(consumer_owner);
+        // Reserve a repeated cached draw before releasing its CPU lease. The first
+        // completed draw is insufficient to release this slot for another copy.
+        frame.last_read.store(2, Ordering::Release);
+        drop(frame);
+        assert!(!ring.slots[0].available());
+        assert!(
+            !ring.retired_idle(),
+            "ring retirement must include outstanding consumer work"
+        );
+        unsafe {
+            context.Signal(consumed.as_ref().unwrap(), 2).unwrap();
+            context.Flush();
+        }
+        wait(&ring.slots[0].consumed_fence, 2);
+        assert!(ring.slots[0].available());
+        assert!(ring.retired_idle());
+        let next = ring
+            .copy_frame(
+                &host.renderer.device,
+                &host.renderer.queue,
+                host.renderer.external_output.as_ref().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        wait(&ring.slots[0].ready_fence, next.ready_value);
+        unsafe {
+            context.Signal(consumed.as_ref().unwrap(), 3).unwrap();
+            context.Flush();
+        }
+        wait(&ring.slots[0].consumed_fence, 3);
+        assert_eq!(
+            unsafe { ring.slots[0].ready_fence.GetCompletedValue() },
+            next.ready_value
+        );
+        drop(ring);
+        assert_ne!(
+            unsafe { ready.as_ref().unwrap().GetCompletedValue() },
+            u64::MAX,
+            "a retained frame must keep producer fences alive after resize/ring retirement"
+        );
+        drop(next);
     }
 }

@@ -5,6 +5,21 @@ use gpui_nightshade::{
 };
 use nightshade_viewer_core::{ViewerArguments, ViewerConnection, ViewerCorePlugin, ViewerRuntime};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let width = std::env::var("VIEWER_TEST_WIDTH")
+        .unwrap_or("640".into())
+        .parse::<u32>()?;
+    let height = std::env::var("VIEWER_TEST_HEIGHT")
+        .unwrap_or("480".into())
+        .parse::<u32>()?;
+    if width == 0 || height == 0 {
+        return Err("test dimensions must be positive".into());
+    }
+    let backends = match std::env::var("VIEWER_TEST_BACKEND").as_deref() {
+        Ok("dx12") => wgpu::Backends::DX12,
+        Ok("vulkan") => wgpu::Backends::VULKAN,
+        Ok(_) => return Err("VIEWER_TEST_BACKEND must be dx12 or vulkan".into()),
+        Err(_) => wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
+    };
     let connection = ViewerConnection::default();
     let mut runtime = pollster::block_on(ViewerRuntime::with_options(
         ViewerArguments {
@@ -12,15 +27,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             no_agent: true,
             ..Default::default()
         },
-        wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
-        640,
-        480,
+        backends,
+        width,
+        height,
         connection.clone(),
         ViewerCorePlugin {
             persist_settings: false,
             remote_catalogs: false,
         },
     ))?;
+    println!(
+        "Adapter: {} {:?}, size {width}x{height}",
+        runtime.renderer().gpu_profile.name,
+        runtime.renderer().gpu_profile.backend
+    );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         runtime.render()?;
@@ -54,8 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let renderer = runtime.renderer();
     let mut ring = ReadbackRing::new(
         &renderer.device,
-        640,
-        480,
+        width,
+        height,
         0,
         renderer.surface_format,
         AlphaMode::Opaque,
