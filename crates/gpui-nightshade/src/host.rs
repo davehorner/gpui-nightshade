@@ -232,6 +232,7 @@ pub trait ViewportHost {
     fn renderer_mut(&mut self) -> &mut WgpuRenderer;
     fn render(&mut self) -> Result<(), Box<dyn std::error::Error>>;
     fn set_camera(&mut self, pose: CameraPose);
+    fn pointer_input(&mut self, _input: crate::input::PointerInput) {}
     fn request_pick(&mut self, x: u32, y: u32);
     fn poll_pick(&mut self) -> Option<Option<u32>>;
     fn continuous(&self) -> bool {

@@ -8,7 +8,7 @@ The cube host registers the actual Shading, Geometry and Outline plugins. Shader
 
 ## Frame and resource ownership
 
-The control mailbox holds only the newest camera/size request. CPU presentation holds at most three staging buffers and one unpublished completed image. GPUI holds the current image and frame scene references. Replacing an image calls `Window::drop_image`; entity release calls `App::drop_image`. External images report one frame so atlas eviction reaches their GPU entries too.
+The control mailbox holds the newest camera/size request alongside a bounded ordered pointer queue. CPU presentation holds at most three staging buffers and one unpublished completed image. GPUI holds the current image and frame scene references. Replacing an image calls `Window::drop_image`; entity release calls `App::drop_image`. External images report one frame so atlas eviction reaches their GPU entries too.
 
 A resize advances a generation. CPU callbacks cannot publish an obsolete generation. A ring is replaced only after its producer work is ready; readback drains mapping callbacks before replacement. Shared images can outlive their ring through owned NT handles and GPUI's imported COM resources. Pixel storage is capped at 256 MiB per presentation ring; Nightshade scene/depth/material/pipeline caches are additional memory, not included in that cap.
 
@@ -18,7 +18,7 @@ Workers sleep on a condition variable when idle. UI polling checks for updates a
 
 ## Input
 
-Canvas prepaint reports logical bounds and scale. Physical dimensions use rounded logical size times scale. Pointer picking subtracts the viewport origin before scaling. Camera orbit/pan/zoom configuration is coalesced. A pick dispatch uses Nightshade's depth/entity-ID compute readback, then selects an entity and enables the existing outline pass. Keyboard focus is assigned on pointer down. Shift-drag currently pans in world X/Y; view-plane pan, pointer capture beyond element boundaries, shortcuts and drag-and-drop still require work.
+Canvas prepaint reports logical bounds and scale. Physical dimensions use rounded logical size times scale. Pointer picking subtracts the viewport origin before scaling. Camera orbit/pan/zoom configuration is coalesced. A pick dispatch uses Nightshade's depth/entity-ID compute readback, then selects an entity and enables the existing outline pass. Keyboard focus is assigned on pointer down. The editor reserves left-drag for trunk gizmos and uses right-drag for camera orbit (Shift pans in world X/Y). Window capture-phase listeners deliver drag motion and release across element boundaries; focus loss, Escape and size/DPI changes clear pending input and restore unfinished gizmo transforms. View-plane pan, broader outside-window capture stress, full shortcut coverage and drag-and-drop remain unfinished.
 
 Multiple viewports currently use independent worlds/devices. A shared ECS with multiple camera producers is a separate lifecycle integration and is not claimed here.
 
@@ -29,3 +29,5 @@ Asset browsing reuses trunk page queries through owned snapshots and a search ac
 Animation controls reuse trunk player/layer/morph/skeleton actions. Snapshots copy morph values from the ECS rather than stale import metadata. Dynamic input entities are retained only for the selected mesh and active layers; subscriptions and focus are released when their binding disappears. Scene root/generation and clip checks reject stale frontend weight edits.
 
 The rendering pane uses owned control indices and effective RenderSettings snapshots, dispatching the same settings actions used by the native frontend and agent. Screenshot capture reuses the renderer queue/readback/writer; GLB export reuses trunk scene gathering and serialization. Native dialogs and export operations run on the viewer worker.
+
+Pointer edges are delivered one per rendered tick, so a queued press/release pair cannot collapse into one ECS frame. Consecutive moves coalesce, and overflow resets to cancellation. Scene input uses the existing offscreen injection APIs and core picking/gizmo systems. Camera bindings avoid applying native left-button orbit alongside gizmo input. Frame publication accepts the latest completed image during input rather than invalidating every frame on a new pointer/camera request; CPU resize-generation checks remain in place.

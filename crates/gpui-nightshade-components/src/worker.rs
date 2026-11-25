@@ -30,6 +30,7 @@ struct State {
     error: Option<String>,
     pub diagnostics: String,
     selected: Option<u32>,
+    input: gpui_nightshade::input::PointerQueue,
 }
 pub struct Worker {
     shared: Arc<(Mutex<State>, Condvar)>,
@@ -42,6 +43,7 @@ impl Worker {
                 preference,
                 fallback: false,
                 selected: None,
+                input: Default::default(),
                 request: ViewRequest {
                     width: 640,
                     height: 480,
@@ -99,6 +101,16 @@ impl Worker {
             state.revision += 1;
             self.shared.1.notify_one();
         }
+    }
+    pub fn input(&self, event: gpui_nightshade::input::PointerInput) {
+        let mut state = self.shared.0.lock().unwrap();
+        state.input.push(event);
+        self.shared.1.notify_one();
+    }
+    pub fn cancel_input(&self) {
+        let mut state = self.shared.0.lock().unwrap();
+        state.input.cancel();
+        self.shared.1.notify_one();
     }
     pub fn has_update(&self) -> bool {
         self.shared.0.lock().unwrap().changed
@@ -229,20 +241,26 @@ fn run(
     let mut last_camera = None;
     loop {
         transport.check_device()?;
-        let (request, revision, fallback) = {
+        let (request, revision, fallback, input_pending) = {
             let mut state = shared.0.lock().unwrap();
             while !state.quit
                 && state.revision == applied
                 && transport.in_flight() == 0
                 && !pick_pending
                 && !host.continuous()
+                && state.input.is_empty()
             {
                 state = shared.1.wait(state).unwrap();
             }
             if state.quit {
                 return Ok(());
             }
-            (state.request, state.revision, state.fallback)
+            (
+                state.request,
+                state.revision,
+                state.fallback,
+                !state.input.is_empty(),
+            )
         };
         if gpu && fallback && transport.can_resize() {
             transport = Transport::new(
@@ -260,7 +278,7 @@ fn run(
                 host.renderer().surface_config.width,
                 host.renderer().surface_config.height,
             );
-        if (revision != applied || host.continuous())
+        if (revision != applied || host.continuous() || input_pending)
             && transport.can_submit()
             && (!resize_requested || transport.can_resize())
         {
@@ -303,6 +321,9 @@ fn run(
                 pick_sequence = Some(sequence);
                 pick_pending = true;
             }
+            if let Some(event) = shared.0.lock().unwrap().input.pop() {
+                host.pointer_input(event);
+            }
             host.render()?;
             let source = host.renderer().external_output.as_ref().unwrap();
             match &mut transport {
@@ -325,17 +346,15 @@ fn run(
                         applied = revision;
                         sequence += 1;
                         let mut state = shared.0.lock().unwrap();
-                        if state.revision == revision {
-                            state.image = Some(Arc::new(RenderImage::from_external(frame)));
-                            state.changed = true;
-                            state.diagnostics = format!(
-                                "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
-                                host.renderer().gpu_profile.name,
-                                request.width,
-                                request.height,
-                                sequence
-                            );
-                        }
+                        state.image = Some(Arc::new(RenderImage::from_external(frame)));
+                        state.changed = true;
+                        state.diagnostics = format!(
+                            "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
+                            host.renderer().gpu_profile.name,
+                            request.width,
+                            request.height,
+                            sequence
+                        );
                     } else {
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -360,7 +379,7 @@ fn run(
                 .ok_or("invalid frame length")?;
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(image)]));
             let mut state = shared.0.lock().unwrap();
-            if state.revision == applied && frame.id.generation == generation {
+            if frame.id.generation == generation {
                 state.image = Some(image);
                 state.changed = true;
                 state.diagnostics = format!(

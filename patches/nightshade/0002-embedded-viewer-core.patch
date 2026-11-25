@@ -563,7 +563,7 @@ diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
 new file mode 100644
 --- /dev/null
 +++ b/apps/viewer/src/core.rs
-@@ -0,0 +1,789 @@
+@@ -0,0 +1,822 @@
 +//! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
 +pub use crate::data::*;
 +pub use crate::plugin::ViewerCorePlugin;
@@ -655,9 +655,17 @@ new file mode 100644
 +    pub sun_pitch: f32,
 +    pub sun_shadows: bool,
 +}
++#[derive(Clone, Copy)]
++pub struct GizmoSnapshot {
++    pub enabled: bool,
++    pub mode: GizmoMode,
++    pub snap: bool,
++    pub dragging: bool,
++}
 +/// An owned snapshot; no ECS guards, UI entities or mutable resource references escape.
 +#[derive(Clone)]
 +pub struct ViewerSnapshot {
++    pub gizmo: GizmoSnapshot,
 +    pub render: RenderingControls,
 +    pub browser: Option<BrowserSnapshot>,
 +    pub nodes: Vec<SceneRow>,
@@ -689,6 +697,12 @@ new file mode 100644
 +pub fn snapshot(world: &World) -> ViewerSnapshot {
 +    let viewer = world.res::<crate::resources::ViewerResources>();
 +    ViewerSnapshot {
++        gizmo: GizmoSnapshot {
++            enabled: viewer.gizmo.enabled,
++            mode: viewer.gizmo.mode,
++            snap: viewer.view.snap,
++            dragging: viewer.gizmo.drag.is_some(),
++        },
 +        render: RenderingControls {
 +            shading: viewer.view.shading,
 +            pbr_debug: viewer.view.pbr_debug,
@@ -781,6 +795,35 @@ new file mode 100644
 +
 +pub(crate) fn advance_history(mut viewer: ResMut<crate::resources::ViewerResources>) {
 +    viewer.history.frame += 1;
++}
++
++pub fn request_pick(world: &mut World, x: u32, y: u32) {
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    viewer.picking.click_wanted = Some(nightshade::prelude::nalgebra_glm::vec2(x as f32, y as f32));
++    viewer.picking.click_adds = false;
++}
++pub fn pick_pending(world: &World) -> bool {
++    let viewer = world.res::<crate::resources::ViewerResources>();
++    viewer.picking.click_wanted.is_some() || viewer.picking.outstanding.is_some()
++}
++
++/// Revert an unfinished gizmo gesture without adding an undo entry.
++pub fn cancel_pointer_gesture(world: &mut World) {
++    let viewer = world
++        .resources
++        .res_mut::<crate::resources::ViewerResources>();
++    viewer.picking.last_press = None;
++    viewer.picking.click_wanted = None;
++    viewer.gizmo.hovered = None;
++    if let Some(drag) = viewer.gizmo.drag.take() {
++        for start in drag.starts {
++            crate::commands::selection::restore_transform(
++                &mut world.storage,
++                start.entity,
++                &start.transform,
++            );
++        }
++    }
 +}
 +
 +#[cfg(test)]
@@ -1342,14 +1385,4 @@ new file mode 100644
 +            "snapshots must own their state"
 +        );
 +    }
-+}
-+
-+pub fn request_pick(world: &mut World, x: u32, y: u32) {
-+    let viewer = world.res_mut::<crate::resources::ViewerResources>();
-+    viewer.picking.click_wanted = Some(nightshade::prelude::nalgebra_glm::vec2(x as f32, y as f32));
-+    viewer.picking.click_adds = false;
-+}
-+pub fn pick_pending(world: &World) -> bool {
-+    let viewer = world.res::<crate::resources::ViewerResources>();
-+    viewer.picking.click_wanted.is_some() || viewer.picking.outstanding.is_some()
 +}

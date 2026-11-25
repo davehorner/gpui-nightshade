@@ -38,6 +38,7 @@ pub struct ViewerRuntime {
     connection: ViewerConnection,
     pick_pending: bool,
     last_pose: Option<CameraPose>,
+    reported_selection: Option<Option<u32>>,
     // Log guards and other plugin-owned objects must outlive all schedules/renderer work.
     _kept_alive: Vec<Box<dyn std::any::Any>>,
 }
@@ -86,8 +87,14 @@ impl ViewerRuntime {
             connection,
             pick_pending: false,
             last_pose: None,
+            reported_selection: None,
             _kept_alive: kept_alive,
         };
+        runtime
+            .world
+            .res_mut::<viewer::core::FrontendInput>()
+            .pointer_over_ui = true;
+        configure_editor_camera(&mut runtime.world);
         runtime.render()?;
         Ok(runtime)
     }
@@ -148,19 +155,24 @@ impl ViewportHost for ViewerRuntime {
                 - nightshade::prelude::nalgebra_glm::Vec3::from(previous.target);
         }
     }
+    fn pointer_input(&mut self, event: gpui_nightshade::input::PointerInput) {
+        apply_pointer_input(&mut self.world, event);
+    }
     fn request_pick(&mut self, x: u32, y: u32) {
         viewer::core::request_pick(&mut self.world, x, y);
         self.pick_pending = true;
     }
     fn poll_pick(&mut self) -> Option<Option<u32>> {
-        if self.pick_pending && !viewer::core::pick_pending(&self.world) {
+        let selected = self
+            .connection
+            .snapshot()
+            .and_then(|s| s.selection.selected.map(|e| e.id));
+        if (self.pick_pending && !viewer::core::pick_pending(&self.world))
+            || self.reported_selection != Some(selected)
+        {
             self.pick_pending = false;
-            Some(
-                viewer::core::snapshot(&self.world)
-                    .selection
-                    .selected
-                    .map(|entity| entity.id),
-            )
+            self.reported_selection = Some(selected);
+            Some(selected)
         } else {
             None
         }
@@ -188,9 +200,227 @@ pub fn open(
     ))?))
 }
 
+fn apply_pointer_input(world: &mut World, event: gpui_nightshade::input::PointerInput) {
+    use gpui_nightshade::input::PointerPhase;
+    use nightshade_platform::winit::{
+        event::{ElementState, MouseButton},
+        keyboard::KeyCode,
+    };
+    if event.phase == PointerPhase::Cancel {
+        viewer::core::cancel_pointer_gesture(world);
+    }
+    let inactive = matches!(event.phase, PointerPhase::Leave | PointerPhase::Cancel);
+    let outside = inactive
+        || world
+            .res::<nightshade_platform::contract::window::Window>()
+            .cached_viewport_size
+            .is_none_or(|(w, h)| {
+                event.position[0] < 0.
+                    || event.position[1] < 0.
+                    || event.position[0] >= w as f32
+                    || event.position[1] >= h as f32
+            });
+    world
+        .res_mut::<viewer::core::FrontendInput>()
+        .pointer_over_ui = outside;
+    let resources = &mut world.resources;
+    if event.position.iter().all(|v| v.is_finite()) {
+        nightshade_window::run::input_inject_cursor_moved(
+            resources,
+            nightshade::prelude::nalgebra_glm::vec2(event.position[0], event.position[1]),
+        );
+    }
+    let keyboard = &mut resources
+        .res_mut::<nightshade_platform::contract::input::Input>()
+        .keyboard;
+    for (key, held) in [
+        (KeyCode::ControlLeft, event.control && !inactive),
+        (KeyCode::ShiftLeft, event.shift && !inactive),
+    ] {
+        keyboard.keystates.insert(
+            key,
+            if held {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
+    }
+    match event.phase {
+        PointerPhase::Press => nightshade_window::run::input_inject_mouse_button(
+            resources,
+            MouseButton::Left,
+            ElementState::Pressed,
+        ),
+        PointerPhase::Release | PointerPhase::Cancel => {
+            nightshade_window::run::input_inject_mouse_button(
+                resources,
+                MouseButton::Left,
+                ElementState::Released,
+            )
+        }
+        _ => {}
+    }
+}
+
+fn configure_editor_camera(world: &mut World) {
+    if let Some(camera) = world.res::<nightshade_camera::resources::ActiveCamera>().0
+        && let Some(orbit) = world
+            .storage
+            .get_mut::<nightshade_camera_controller::contract::PanOrbitCamera>(camera)
+    {
+        use nightshade_camera_controller::contract::PanOrbitButton;
+        orbit.bindings.orbit = PanOrbitButton::Right;
+        orbit.bindings.pan = PanOrbitButton::Middle;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_edges_drive_native_gizmo_and_undo_without_moving_camera() {
+        use gpui_nightshade::input::{PointerInput, PointerPhase};
+        let mut app = viewer::core::compose(
+            ViewerArguments {
+                no_agent: true,
+                preview: true,
+                ..Default::default()
+            },
+            ViewerCorePlugin {
+                persist_settings: false,
+                remote_catalogs: false,
+            },
+        );
+        app.world
+            .res_mut::<nightshade_platform::contract::window::Window>()
+            .cached_viewport_size = Some((640, 480));
+        app.stages.apply_orderings();
+        app.startup.run(&mut app.world);
+        configure_editor_camera(&mut app.world);
+        viewer::core::submit(
+            &mut app.world,
+            ViewerAction::AddPrimitive(PrimitiveKind::Cube),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            app.world.increment_tick();
+            app.stages.run(&mut app.world);
+        }
+        let initial = viewer::core::snapshot(&app.world);
+        let camera = app
+            .world
+            .res::<nightshade_camera::resources::ActiveCamera>()
+            .0
+            .unwrap();
+        let orbit = app
+            .world
+            .storage
+            .get::<nightshade_camera_controller::contract::PanOrbitCamera>(camera)
+            .unwrap();
+        let before = (
+            orbit.target_yaw,
+            orbit.target_pitch,
+            orbit.target_radius,
+            orbit.target_focus,
+        );
+        for (phase, position) in [
+            (PointerPhase::Press, [320., 240.]),
+            (PointerPhase::Move, [360., 260.]),
+            (PointerPhase::Release, [360., 260.]),
+        ] {
+            apply_pointer_input(
+                &mut app.world,
+                PointerInput {
+                    phase,
+                    position,
+                    control: false,
+                    shift: false,
+                },
+            );
+            app.world.increment_tick();
+            app.stages.run(&mut app.world);
+        }
+        let edited = viewer::core::snapshot(&app.world);
+        assert_ne!(
+            edited.selection.translation, initial.selection.translation,
+            "the center gizmo must move the selected cube"
+        );
+        assert!(edited.can_undo);
+        let orbit = app
+            .world
+            .storage
+            .get::<nightshade_camera_controller::contract::PanOrbitCamera>(camera)
+            .unwrap();
+        assert_eq!(
+            (
+                orbit.target_yaw,
+                orbit.target_pitch,
+                orbit.target_radius,
+                orbit.target_focus
+            ),
+            before
+        );
+        viewer::core::submit(&mut app.world, ViewerAction::Undo).unwrap();
+        app.world.increment_tick();
+        app.stages.run(&mut app.world);
+        assert_eq!(
+            viewer::core::snapshot(&app.world).selection.translation,
+            initial.selection.translation
+        );
+        for (phase, position) in [
+            (PointerPhase::Press, [320., 240.]),
+            (PointerPhase::Move, [360., 260.]),
+            (PointerPhase::Cancel, [0., 0.]),
+        ] {
+            apply_pointer_input(
+                &mut app.world,
+                PointerInput {
+                    phase,
+                    position,
+                    control: false,
+                    shift: false,
+                },
+            );
+            app.world.increment_tick();
+            app.stages.run(&mut app.world);
+        }
+        let cancelled = viewer::core::snapshot(&app.world);
+        assert_eq!(
+            cancelled.selection.translation, initial.selection.translation,
+            "cancel restores the drag start"
+        );
+        assert!(!cancelled.can_undo, "cancel must not add a history entry");
+        apply_pointer_input(
+            &mut app.world,
+            PointerInput {
+                phase: PointerPhase::Cancel,
+                position: [0.; 2],
+                control: true,
+                shift: true,
+            },
+        );
+        let input = app
+            .world
+            .res::<nightshade_platform::contract::input::Input>();
+        assert!(
+            !input
+                .mouse
+                .state
+                .contains(nightshade_platform::contract::input::MouseState::LEFT_CLICKED)
+        );
+        assert!(
+            !input
+                .keyboard
+                .is_key_pressed(nightshade_platform::winit::keyboard::KeyCode::ControlLeft)
+        );
+        assert!(
+            app.world
+                .res::<viewer::core::FrontendInput>()
+                .pointer_over_ui
+        );
+    }
     #[test]
     fn bridge_bounds_pending_actions_and_preserves_fifo() {
         let connection = ViewerConnection::default();

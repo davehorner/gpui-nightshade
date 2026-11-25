@@ -862,22 +862,57 @@ impl Render for Editor {
                     .child(self.action_button("export", "Export GLB", Action::ExportModel, cx))
                     .child(self.action_button("undo", "Undo", Action::Undo, cx))
                     .child(self.action_button("redo", "Redo", Action::Redo, cx))
+                    .child(
+                        self.action_button(
+                            "move",
+                            if snapshot
+                                .as_ref()
+                                .is_some_and(|s| s.gizmo.enabled && s.gizmo.mode == GizmoMode::Move)
+                            {
+                                "Move •"
+                            } else {
+                                "Move"
+                            },
+                            Action::SetGizmoMode(GizmoMode::Move),
+                            cx,
+                        ),
+                    )
+                    .child(
+                        self.action_button(
+                            "rotate",
+                            if snapshot.as_ref().is_some_and(|s| {
+                                s.gizmo.enabled && s.gizmo.mode == GizmoMode::Rotate
+                            }) {
+                                "Rotate •"
+                            } else {
+                                "Rotate"
+                            },
+                            Action::SetGizmoMode(GizmoMode::Rotate),
+                            cx,
+                        ),
+                    )
+                    .child(
+                        self.action_button(
+                            "scale",
+                            if snapshot.as_ref().is_some_and(|s| {
+                                s.gizmo.enabled && s.gizmo.mode == GizmoMode::Scale
+                            }) {
+                                "Scale •"
+                            } else {
+                                "Scale"
+                            },
+                            Action::SetGizmoMode(GizmoMode::Scale),
+                            cx,
+                        ),
+                    )
                     .child(self.action_button(
-                        "move",
-                        "Move",
-                        Action::SetGizmoMode(GizmoMode::Move),
-                        cx,
-                    ))
-                    .child(self.action_button(
-                        "rotate",
-                        "Rotate",
-                        Action::SetGizmoMode(GizmoMode::Rotate),
-                        cx,
-                    ))
-                    .child(self.action_button(
-                        "scale",
-                        "Scale",
-                        Action::SetGizmoMode(GizmoMode::Scale),
+                        "snap",
+                        if snapshot.as_ref().is_some_and(|s| s.gizmo.snap) {
+                            "Snap: on"
+                        } else {
+                            "Snap: off"
+                        },
+                        Action::SetSnap(!snapshot.as_ref().is_some_and(|s| s.gizmo.snap)),
                         cx,
                     ))
                     .child(
@@ -980,8 +1015,9 @@ pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
                                 worker_connection.clone(),
                             )
                         });
-                    let viewport =
-                        cx.new(|cx| NightshadeViewport::from_factory(backend, factory, cx));
+                    let viewport = cx.new(|cx| {
+                        NightshadeViewport::from_factory(backend, factory, cx).with_scene_input()
+                    });
                     cx.new(|cx| Editor::new(viewport, connection, window, cx))
                 },
             )

@@ -8,6 +8,9 @@ pub struct NightshadeViewport {
     diagnostics: String,
     request: ViewRequest,
     last_pointer: Option<Point<Pixels>>,
+    drag_button: Option<MouseButton>,
+    scene_input: bool,
+    input_subscriptions: Option<Vec<Subscription>>,
     focus: FocusHandle,
     bounds: Bounds<Pixels>,
     scale: f32,
@@ -76,12 +79,118 @@ impl NightshadeViewport {
                 pick: None,
             },
             last_pointer: None,
+            drag_button: None,
+            scene_input: false,
+            input_subscriptions: None,
             bounds: Bounds::default(),
             scale: 1.,
             pick_sequence: 0,
             focus: cx.focus_handle(),
             _poll: poll,
         }
+    }
+    /// Use trunk scene input for left-button picking/gizmos; right-drag navigates.
+    pub fn with_scene_input(mut self) -> Self {
+        self.scene_input = true;
+        self
+    }
+    fn local_position(&self, position: Point<Pixels>, captured: bool) -> Option<[f32; 2]> {
+        gpui_nightshade::input::local_pointer(
+            [position.x.into(), position.y.into()],
+            [self.bounds.origin.x.into(), self.bounds.origin.y.into()],
+            [
+                self.bounds.size.width.into(),
+                self.bounds.size.height.into(),
+            ],
+            self.scale,
+            captured,
+        )
+    }
+    fn scene_event(
+        &self,
+        phase: gpui_nightshade::input::PointerPhase,
+        position: Point<Pixels>,
+        modifiers: Modifiers,
+        captured: bool,
+    ) {
+        if !self.scene_input {
+            return;
+        }
+        if let Some(position) = self.local_position(position, captured) {
+            self.worker.input(gpui_nightshade::input::PointerInput {
+                phase,
+                position,
+                control: modifiers.control,
+                shift: modifiers.shift,
+            });
+        } else if phase == gpui_nightshade::input::PointerPhase::Move {
+            self.worker.input(gpui_nightshade::input::PointerInput {
+                phase: gpui_nightshade::input::PointerPhase::Leave,
+                position: [0.; 2],
+                control: false,
+                shift: false,
+            });
+        }
+    }
+    fn cancel_input(&mut self) {
+        if self.scene_input {
+            self.worker.cancel_input();
+        }
+        self.drag_button = None;
+        self.last_pointer = None;
+    }
+    fn move_pointer(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.drag_button.is_some() && !event.dragging() {
+            self.cancel_input();
+            return;
+        }
+        if let Some(button) = self.drag_button {
+            if self.scene_input && button == MouseButton::Left {
+                self.scene_event(
+                    gpui_nightshade::input::PointerPhase::Move,
+                    event.position,
+                    event.modifiers,
+                    true,
+                );
+            } else if let Some(last) = self.last_pointer {
+                if event.modifiers.shift {
+                    self.request.target[0] -=
+                        f32::from(event.position.x - last.x) * self.request.distance * 0.002;
+                    self.request.target[1] +=
+                        f32::from(event.position.y - last.y) * self.request.distance * 0.002;
+                } else {
+                    self.request.yaw -= f32::from(event.position.x - last.x) * 0.01;
+                    self.request.pitch = (self.request.pitch
+                        + f32::from(event.position.y - last.y) * 0.01)
+                        .clamp(-1.5, 1.5);
+                }
+                self.worker.request(self.request);
+                cx.notify();
+            }
+            self.last_pointer = Some(event.position);
+        } else if self.scene_input {
+            self.scene_event(
+                gpui_nightshade::input::PointerPhase::Move,
+                event.position,
+                event.modifiers,
+                false,
+            );
+        }
+    }
+    fn release_pointer(&mut self, event: &MouseUpEvent) {
+        if self.drag_button != Some(event.button) {
+            return;
+        }
+        if self.scene_input && event.button == MouseButton::Left {
+            self.scene_event(
+                gpui_nightshade::input::PointerPhase::Release,
+                event.position,
+                event.modifiers,
+                true,
+            );
+        }
+        self.drag_button = None;
+        self.last_pointer = None;
     }
 }
 impl Focusable for NightshadeViewport {
@@ -91,6 +200,17 @@ impl Focusable for NightshadeViewport {
 }
 impl Render for NightshadeViewport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.input_subscriptions.is_none() {
+            let focus = self.focus.clone();
+            self.input_subscriptions = Some(vec![
+                cx.on_focus_out(&focus, window, |view, _, _, _| view.cancel_input()),
+                cx.observe_window_activation(window, |view, window, _| {
+                    if !window.is_window_active() {
+                        view.cancel_input();
+                    }
+                }),
+            ]);
+        }
         let (image, diagnostics) = self.worker.take();
         if let Some(image) = image
             && let Some(old) = self.image.replace(image)
@@ -108,58 +228,57 @@ impl Render for NightshadeViewport {
             .flex_col()
             .size_full()
             .overflow_hidden()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    window.focus(&this.focus, cx);
-                    if let Some(point) = gpui_nightshade::input::local_pointer(
-                        [event.position.x.into(), event.position.y.into()],
-                        [this.bounds.origin.x.into(), this.bounds.origin.y.into()],
-                        [
-                            this.bounds.size.width.into(),
-                            this.bounds.size.height.into(),
-                        ],
-                        this.scale,
+            .on_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                let camera_button = if this.scene_input {
+                    MouseButton::Right
+                } else {
+                    MouseButton::Left
+                };
+                if event.button != MouseButton::Left && event.button != camera_button {
+                    return;
+                }
+                let Some(point) = this.local_position(event.position, false) else {
+                    return;
+                };
+                window.focus(&this.focus, cx);
+                this.drag_button = Some(event.button);
+                this.last_pointer = Some(event.position);
+                if this.scene_input && event.button == MouseButton::Left {
+                    this.scene_event(
+                        gpui_nightshade::input::PointerPhase::Press,
+                        event.position,
+                        event.modifiers,
                         false,
-                    ) {
-                        this.pick_sequence += 1;
-                        this.request.pick =
-                            Some((point[0] as u32, point[1] as u32, this.pick_sequence));
-                        this.worker.request(this.request);
-                    }
-                    this.last_pointer = Some(event.position);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.last_pointer = None),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.last_pointer = None),
-            )
+                    );
+                } else if !this.scene_input {
+                    this.pick_sequence += 1;
+                    this.request.pick =
+                        Some((point[0] as u32, point[1] as u32, this.pick_sequence));
+                    this.worker.request(this.request);
+                } else {
+                    this.worker.cancel_input();
+                }
+                cx.stop_propagation();
+            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if let Some(last) = this.last_pointer.replace(event.position) {
-                    if event.dragging() {
-                        if event.modifiers.shift {
-                            this.request.target[0] -= f32::from(event.position.x - last.x)
-                                * this.request.distance
-                                * 0.002;
-                            this.request.target[1] += f32::from(event.position.y - last.y)
-                                * this.request.distance
-                                * 0.002;
-                        } else {
-                            this.request.yaw -= f32::from(event.position.x - last.x) * 0.01;
-                            this.request.pitch = (this.request.pitch
-                                + f32::from(event.position.y - last.y) * 0.01)
-                                .clamp(-1.5, 1.5);
-                        }
-                        this.worker.request(this.request);
-                        cx.notify();
-                    } else {
-                        this.last_pointer = None;
-                    }
+                if this.drag_button.is_none() {
+                    this.move_pointer(event, cx);
+                }
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                if !*hovered && this.drag_button.is_none() && this.scene_input {
+                    this.worker.input(gpui_nightshade::input::PointerInput {
+                        phase: gpui_nightshade::input::PointerPhase::Leave,
+                        position: [0.; 2],
+                        control: false,
+                        shift: false,
+                    });
+                }
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.cancel_input();
+                    cx.stop_propagation();
                 }
             }))
             .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
@@ -174,6 +293,11 @@ impl Render for NightshadeViewport {
                     move |bounds, window, cx| {
                         let scale = window.scale_factor();
                         let _ = entity.update(cx, |this, _| {
+                            if (this.bounds != bounds || this.scale != scale)
+                                && this.drag_button.is_some()
+                            {
+                                this.cancel_input();
+                            }
                             this.bounds = bounds;
                             this.scale = scale;
                             this.request.width =
@@ -184,6 +308,22 @@ impl Render for NightshadeViewport {
                         });
                     },
                     move |bounds, (), window, cx| {
+                        let move_entity = paint_entity.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = move_entity.update(cx, |view, cx| {
+                                    if view.drag_button.is_some() {
+                                        view.move_pointer(event, cx);
+                                    }
+                                });
+                            }
+                        });
+                        let up_entity = paint_entity.clone();
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = up_entity.update(cx, |view, _| view.release_pointer(event));
+                            }
+                        });
                         if let Some(image) = image
                             && let Err(error) = window.paint_image(
                                 bounds,
