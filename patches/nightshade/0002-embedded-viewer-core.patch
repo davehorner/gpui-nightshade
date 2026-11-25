@@ -563,14 +563,15 @@ diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
 new file mode 100644
 --- /dev/null
 +++ b/apps/viewer/src/core.rs
-@@ -0,0 +1,487 @@
+@@ -0,0 +1,648 @@
 +//! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
 +pub use crate::data::*;
 +pub use crate::plugin::ViewerCorePlugin;
 +pub use crate::resources::{
-+    AnimationView, BrowserEntry, ClipInfo, MaterialView, ModelStats, SceneRow, Selection,
-+    ViewerArguments,
++    AnimationView, BrowserEntry, ClipInfo, LayerView, MaterialView, ModelStats, MorphInfo,
++    SceneRow, Selection, ViewerArguments,
 +};
++pub use nightshade::prelude::Entity as SceneEntity;
 +use nightshade::prelude::*;
 +
 +#[derive(Default)]
@@ -644,6 +645,11 @@ new file mode 100644
 +    pub selection: Selection,
 +    pub animation: AnimationView,
 +    pub clips: Vec<ClipInfo>,
++    pub animation_root: Option<SceneEntity>,
++    pub morphs: Vec<MorphInfo>,
++    pub skeleton_enabled: bool,
++    pub joint_count: usize,
++    pub has_held_clips: bool,
 +    pub stats: Option<ModelStats>,
 +    pub loading: bool,
 +    pub grid: bool,
@@ -669,6 +675,38 @@ new file mode 100644
 +        selection: viewer.selection.clone(),
 +        animation: viewer.animation.clone(),
 +        clips: viewer.model.clips.clone(),
++        animation_root: viewer.model.roots.first().copied(),
++        morphs: viewer
++            .model
++            .morphs
++            .iter()
++            .filter(|info| world.storage.is_alive(info.entity))
++            .map(|info| {
++                let mut info = info.clone();
++                if let Some(weights) =
++                    world
++                        .storage
++                        .get::<nightshade_render::components::morph::MorphWeights>(info.entity)
++                {
++                    info.weights = weights.weights.clone();
++                }
++                info
++            })
++            .collect(),
++        skeleton_enabled: viewer.skeleton.enabled,
++        joint_count: viewer
++            .model
++            .entities
++            .iter()
++            .filter_map(|entity| {
++                world
++                    .storage
++                    .get::<nightshade_render::components::skin::Skin>(*entity)
++            })
++            .flat_map(|skin| skin.joints.iter().copied())
++            .collect::<std::collections::HashSet<_>>()
++            .len(),
++        has_held_clips: viewer.model.held_clips.is_some(),
 +        stats: viewer.model.stats.clone(),
 +        loading: viewer.model.pending.is_some()
 +            || viewer
@@ -955,6 +993,129 @@ new file mode 100644
 +        app.world.increment_tick();
 +        app.stages.run(&mut app.world);
 +        assert!(snapshot(&app.world).browser.is_none());
++    }
++
++    #[test]
++    fn animation_layers_morph_weights_and_skeleton_work_without_ui() {
++        use crate::resources::ViewerResources;
++        use nightshade_animation::contract::{AnimationClip, AnimationPlayer};
++        use nightshade_render::components::{morph::MorphWeights, skin::Skin};
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        let joint = app
++            .world
++            .spawn((nightshade_scene::contract::GlobalTransform::default(),));
++        let root = app.world.spawn((AnimationPlayer {
++            clips: vec![AnimationClip {
++                name: "Test clip".into(),
++                duration: 2.,
++                ..Default::default()
++            }],
++            ..Default::default()
++        },));
++        let mesh = app.world.spawn((
++            MorphWeights::new(vec![0., 0.], "Morph mesh"),
++            Skin::new(vec![joint], vec![nalgebra_glm::Mat4::identity()]),
++        ));
++        {
++            let viewer = app.world.res_mut::<ViewerResources>();
++            viewer.model.roots = vec![root];
++            viewer.model.entities = vec![root, mesh, joint];
++            viewer.model.clips = vec![ClipInfo {
++                name: "Test clip".into(),
++                duration: 2.,
++            }];
++            viewer.model.morphs = vec![MorphInfo {
++                entity: mesh,
++                name: "Morph mesh".into(),
++                weights: vec![0., 0.],
++            }];
++        }
++        submit(&mut app.world, ViewerAction::SetBlendTime(0.4)).unwrap();
++        submit(&mut app.world, ViewerAction::TogglePlayback).unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::AddAnimationLayer {
++                clip: 0,
++                weight: 0.5,
++            },
++        )
++        .unwrap();
++        submit(&mut app.world, ViewerAction::SetShowSkeleton(true)).unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let initial = snapshot(&app.world);
++        assert_eq!(initial.animation_root, Some(root));
++        assert_eq!(initial.animation.blend_time, 0.4);
++        assert!(initial.animation.playing);
++        assert_eq!(initial.animation.clip, Some(0));
++        assert_eq!(initial.animation.layers.len(), 1);
++        assert_eq!(initial.animation.layers[0].weight, 0.5);
++        assert!(initial.skeleton_enabled);
++        assert_eq!(initial.joint_count, 1);
++        submit(
++            &mut app.world,
++            ViewerAction::SetLayerWeight {
++                index: 0,
++                weight: 0.25,
++            },
++        )
++        .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetMorphWeight {
++                entity: mesh,
++                index: 1,
++                weight: 0.8,
++            },
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        app.world
++            .storage
++            .get_mut::<MorphWeights>(mesh)
++            .unwrap()
++            .set_weight(0, 0.7);
++        let edited = snapshot(&app.world);
++        assert_eq!(edited.animation.layers[0].weight, 0.25);
++        assert_eq!(
++            edited.morphs[0].weights,
++            vec![0.7, 0.8],
++            "snapshots read current ECS morph weights"
++        );
++        assert_eq!(
++            initial.morphs[0].weights,
++            vec![0., 0.],
++            "snapshots own their weights"
++        );
++        submit(&mut app.world, ViewerAction::RemoveAnimationLayer(0)).unwrap();
++        submit(&mut app.world, ViewerAction::StopAnimation).unwrap();
++        submit(&mut app.world, ViewerAction::SetShowSkeleton(false)).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let stopped = snapshot(&app.world);
++        assert!(stopped.animation.layers.is_empty());
++        assert!(!stopped.animation.playing);
++        assert!(!stopped.skeleton_enabled);
++        assert!(
++            !app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
 +    }
 +    #[test]
 +    fn original_native_frontend_still_composes_and_starts() {

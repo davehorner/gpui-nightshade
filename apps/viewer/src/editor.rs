@@ -1,3 +1,5 @@
+mod animation;
+use animation::{WeightEditor, WeightTarget};
 use gpui_kit::base::Disableable;
 use gpui_kit::{
     component::{
@@ -16,7 +18,7 @@ use nightshade_viewer_core::{
     LightKind, MaterialField, PrimitiveKind, TextureSlot, ViewerAction as Action, ViewerArguments,
     ViewerConnection, ViewerSnapshot,
 };
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 struct Editor {
     viewport: Entity<NightshadeViewport>,
@@ -29,6 +31,7 @@ struct Editor {
     overlay: bool,
     field_selection: Option<(u32, u32)>,
     thumbnails: crate::thumbnails::Thumbnails,
+    weights: HashMap<WeightTarget, WeightEditor>,
 }
 impl Editor {
     fn new(
@@ -63,6 +66,7 @@ impl Editor {
             "Far (0 = infinite)",
             "Playback speed",
             "Search assets — Enter to apply",
+            "Blend seconds",
         ];
         let fields: Vec<_> = labels
             .iter()
@@ -116,6 +120,7 @@ impl Editor {
             overlay: false,
             field_selection: None,
             thumbnails: Default::default(),
+            weights: HashMap::new(),
         }
     }
     fn send(&mut self, action: Action, cx: &mut Context<Self>) {
@@ -210,6 +215,7 @@ impl Editor {
                 .map(|v| Action::SetCameraField(CameraField::Far(v))),
             21 => scalar().filter(|v| *v > 0.).map(Action::SetAnimationSpeed),
             22 => Some(Action::SetBrowserSearch(value.clone())),
+            23 => scalar().filter(|v| *v >= 0.).map(Action::SetBlendTime),
             _ => None,
         };
         if let Some(action) = action {
@@ -252,6 +258,7 @@ impl Editor {
                 .browser
                 .as_ref()
                 .map_or(String::new(), |b| b.query.clone()),
+            format!("{:.3}", snapshot.animation.blend_time),
         ];
         for (field, value) in self.fields.iter().zip(values) {
             if !field.focus_handle(cx).is_focused(window)
@@ -271,6 +278,13 @@ impl Editor {
         let disabled = match &action {
             Action::Undo => self.snapshot.as_ref().is_none_or(|s| !s.can_undo),
             Action::Redo => self.snapshot.as_ref().is_none_or(|s| !s.can_redo),
+            Action::TogglePlayback | Action::StopAnimation => {
+                self.snapshot.as_ref().is_none_or(|s| s.clips.is_empty())
+            }
+            Action::ApplyHeldClips => self
+                .snapshot
+                .as_ref()
+                .is_none_or(|s| !s.has_held_clips || s.joint_count == 0),
             _ => false,
         };
         Button::new(id)
@@ -467,6 +481,7 @@ impl Render for Editor {
                         && i != 7
                         && i != 21
                         && i != 22
+                        && i != 23
                         && field.focus_handle(cx).is_focused(window)
                 }) {
                     window.focus(&self.viewport.focus_handle(cx), cx);
@@ -474,6 +489,7 @@ impl Render for Editor {
                 self.field_selection = selected;
             }
             self.sync_fields(snapshot, window, cx);
+            self.sync_weight_fields(snapshot, window, cx);
         }
         let mut tree = div()
             .id("scene-tree")
@@ -553,6 +569,9 @@ impl Render for Editor {
                         ))
                         .child(self.action_button("delete", "Delete", Action::DeleteSelected, cx)),
                 );
+                if let Some(morphs) = self.morph_panel(snapshot, cx) {
+                    inspector = inspector.child(morphs);
+                }
                 if snapshot.selection.material.is_some()
                     && snapshot.selection.light.is_none()
                     && snapshot.selection.camera.is_none()
@@ -714,36 +733,8 @@ impl Render for Editor {
                     cx,
                 ));
         }
-        let mut timeline = div().flex().items_center().gap_2().p_2().bg(rgb(0x20242d));
-        if let Some(snapshot) = &snapshot {
-            timeline = timeline
-                .child(self.action_button("play", "Play / pause", Action::TogglePlayback, cx))
-                .child(self.action_button("stop", "Stop", Action::StopAnimation, cx))
-                .child(Input::new(&self.fields[7]).w(px(100.)))
-                .child("Speed")
-                .child(Input::new(&self.fields[21]).w(px(70.)))
-                .child(self.action_button(
-                    "loop",
-                    "Toggle loop",
-                    Action::SetAnimationLoop(!snapshot.animation.looping),
-                    cx,
-                ))
-                .child(format!(
-                    "{:.2} / {:.2}s · {} clips",
-                    snapshot.animation.time,
-                    snapshot.animation.duration,
-                    snapshot.clips.len()
-                ));
-            for (index, clip) in snapshot.clips.iter().enumerate() {
-                timeline = timeline.child(
-                    Button::new(("clip", index))
-                        .label(clip.name.clone())
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.send(Action::BlendToClip(index), cx)
-                        })),
-                );
-            }
-        }
+        let timeline = snapshot.as_ref().map(|s| self.animation_panel(s, cx));
+
         div()
             .key_context("NightshadeEditor")
             .size_full()
@@ -756,6 +747,10 @@ impl Render for Editor {
                     .fields
                     .iter()
                     .any(|field| field.focus_handle(cx).is_focused(window))
+                    || view
+                        .weights
+                        .values()
+                        .any(|field| field.input.focus_handle(cx).is_focused(window))
                 {
                     return;
                 }
@@ -880,7 +875,7 @@ impl Render for Editor {
                     )
                     .child(inspector),
             )
-            .child(timeline)
+            .when_some(timeline, |root, timeline| root.child(timeline))
             .child(
                 div()
                     .px_2()

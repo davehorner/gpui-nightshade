@@ -8,7 +8,11 @@ The inspector exposes transforms/name, visibility/delete, base color RGBA, metal
 
 Point/spot lights can be created from the toolbar. Light inspectors expose RGB, intensity, range, cone angles in degrees and shadows. Light-marker materials are hidden so the actual light controls remain accessible. Selected cameras expose perspective FOV, near/far clipping and camera activation; perspective far clip zero means infinite. A button restores the editor camera.
 
-Playback controls include clip selection, play/pause, stop, seek, positive speed and looping. Advanced animation layers, morph/skeleton controls and blend settings remain to be built. Undo/Redo buttons reflect trunk history availability; creation is not recorded by trunk's current history implementation. Core regression tests verify transform, light and camera edit undo.
+Playback controls include clip selection, play/pause, stop, seek, positive speed, looping and blend duration. Each clip can be added as a layer; layer weights apply on Enter and layers can be removed. Duplicate layer additions are disabled. Dynamic fields are bound to the current scene root, clip and entity generation, and stale fields are released when the model or layer changes.
+
+Select a mesh with morph targets to edit its indexed weights (0–1) in the inspector. Snapshots read current ECS weights, including changes made by animation. Pause playback before manual edits; active animation can overwrite them. Skeleton display reuses trunk's existing overlay and reports the model's unique joint count. The hierarchy remains available for selecting joints. Apply held clips invokes trunk's existing retargeting action and is enabled when held clips and a skeleton are present; cross-model retargeting still needs end-to-end validation.
+
+Core tests exercise player/layer actions, actual morph state, owned snapshots and skeleton toggling. UI binding tests reject invalid weights and stale scene/layer edits. Live Windows checks loaded AnimatedMorphCube, added a layer and verified a GPUI weight edit through MCP, paused playback and visibly changed the morph, then loaded SimpleSkin and verified its skeleton toggle and two-joint count. Undo/Redo buttons reflect trunk history availability; creation is not recorded by trunk's current history implementation. Core regression tests verify transform, light and camera edit undo.
 
 ## Asset browser
 
@@ -26,4 +30,4 @@ The original agent plugin runs on the same worker-owned world used by the editor
 
 ## Remaining work
 
-Docking, local preview generation, complete PBR controls, morph/skeleton and animation layers, atmosphere, export/screenshot UI, conversion UI, drag/drop and gizmo pointer routing remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.
+Docking, local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, atmosphere, export/screenshot UI, conversion UI, drag/drop and gizmo pointer routing remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.
