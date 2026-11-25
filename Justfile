@@ -38,6 +38,13 @@ cube backend="auto":
 viewer backend="auto":
     cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}}
 
+rustel backend="auto":
+    cargo run --manifest-path gpui-rustel/Cargo.toml --target-dir target --release --locked -- --presentation={{backend}}
+
+rustel-check:
+    cargo test --manifest-path gpui-rustel/Cargo.toml --target-dir target --locked
+    cargo clippy --manifest-path gpui-rustel/Cargo.toml --target-dir target --all-targets --locked -- -D warnings
+
 gltf model backend="auto":
     cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}} --model="{{model}}"
 

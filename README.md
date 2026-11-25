@@ -8,6 +8,8 @@ The editor, demos and rendering helpers default to Vulkan with GPU sharing on su
 
 ## Build and run
 
+The [GPUI Rustel app](gpui-rustel/README.md) ports `bespoke_rustel`'s music mode into a native music-first application using this viewport and the existing hub protocol. Run `just rustel` with the sibling source checkout and music producer prepared as documented there.
+
 Requires Rust 1.100.0, Windows SDK/MSVC C++ build tools and `just`. `basis-universal-sys` and `meshopt` compile native C++ upstream dependencies. All application and integration code is Rust.
 
 ```text

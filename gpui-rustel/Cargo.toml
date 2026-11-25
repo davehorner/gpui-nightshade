@@ -1,0 +1,25 @@
+[package]
+name = "gpui-rustel"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+gpui-nightshade = { path = "../crates/gpui-nightshade" }
+gpui-nightshade-components = { path = "../crates/gpui-nightshade-components" }
+nightshade = { path = "../upstream/nightshade/crates/nightshade" }
+nightshade-render = { path = "../upstream/nightshade/crates/plugins/describe/nightshade-render" }
+pollster = "0.4"
+music-link = { path = "../../bespoke_rustel/music-link" }
+hearsay = { path = "../../bespoke_rustel/hearsay" }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros", "net"] }
+serde_json = "1"
+
+
+[workspace]
+resolver = "2"
+
+[patch.crates-io]
+gpui-pre = { path = "../upstream/gpui-snapshot/gpui" }
+gpui-pre-windows = { path = "../upstream/gpui-snapshot/gpui-windows" }
