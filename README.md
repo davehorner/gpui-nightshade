@@ -14,6 +14,7 @@ Requires Rust 1.100.0, Windows SDK/MSVC C++ build tools and `just`. `basis-unive
 just init
 just check
 just test
+just test-core
 just test-gpu
 just headless
 just viewer
@@ -25,7 +26,7 @@ just fmt
 just clippy
 ```
 
-Equivalent editor launch: `cargo run -p gpui-nightshade-viewer -- --presentation=readback`. Use `--model=C:/models/scene.glb`, `--no-agent` or `--agent-port=PORT` as needed. The original native agent plugin is composed against the same worker-owned world; its end-to-end GPUI validation remains pending.
+Equivalent editor launch: `cargo run -p gpui-nightshade-viewer -- --presentation=readback`. Use `--model=C:/models/scene.glb`, `--no-agent` or `--agent-port=PORT` as needed. The original native agent plugin is composed against the same worker-owned world; live GPUI selection/rename and HTTP core regression tests pass. See [viewer controls](docs/viewer.md).
 `--presentation=readback` forces CPU transfer. `windows-shared` requires the GPU backend and never falls back. `auto` selects shared presentation on Windows and falls back to readback after allocation/import failure; its diagnostics identify the active transport. `GPUI_NIGHTSHADE_PRESENTATION` supplies the default when no CLI selection is present.
 
 Left drag orbits; Shift+left drag pans; wheel zooms; clicking picks using physical viewport-local coordinates. The overlay button demonstrates GPUI content above the scene. `--multi-viewport` creates two independent scene hosts, not two cameras sharing one ECS.

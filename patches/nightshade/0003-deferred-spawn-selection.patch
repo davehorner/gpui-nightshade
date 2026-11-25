@@ -1,0 +1,63 @@
+diff --git a/apps/viewer/src/commands/scene.rs b/apps/viewer/src/commands/scene.rs
+index 244fa7a..211fcee 100644
+--- a/apps/viewer/src/commands/scene.rs
++++ b/apps/viewer/src/commands/scene.rs
+@@ -257,18 +257,27 @@ pub fn isolate(
+ 
+ pub fn register_spawned(
+     stage: &mut crate::resources::Stage<'_>,
+-    storage: &mut nightshade::ecs::Storage,
++    commands: &mut Commands,
+     entity: Entity,
+ ) {
+-    {
+-        let viewer = &mut *stage.viewer;
++    stage.viewer.view.inspector_open = true;
++    stage.viewer.view.add_open = false;
++    // The entity and its components are still queued here. Read inspector state
++    // only after those commands have run, including the material assignment.
++    commands.queue(move |storage, resources| {
++        let mut viewer = resources
++            .remove::<ViewerResources>()
++            .expect("viewer resources");
+         viewer.model.entities.push(entity);
+-        viewer.view.inspector_open = true;
+-        viewer.view.add_open = false;
+-    }
+-    select_entity(stage, storage, Some(entity));
+-    let viewer = &mut *stage.viewer;
+-    build_rows(viewer, storage);
++        crate::commands::selection::select(&mut viewer, storage, Some(entity));
++        crate::commands::material::read_selected(
++            &mut viewer,
++            storage,
++            resources.res::<nightshade_graphics::prelude::MaterialRegistry>(),
++        );
++        build_rows(&mut viewer, storage);
++        resources.insert(viewer);
++    });
+ }
+ 
+ pub fn apply_variant(
+diff --git a/apps/viewer/src/commands/spawn.rs b/apps/viewer/src/commands/spawn.rs
+index cc3d711..cffa89b 100644
+--- a/apps/viewer/src/commands/spawn.rs
++++ b/apps/viewer/src/commands/spawn.rs
+@@ -16,7 +16,7 @@ pub fn add_primitive_at_focus(
+ ) {
+     let position = orbit_focus(active_camera, storage);
+     let entity = add_primitive(commands, position, kind);
+-    register_spawned(stage, storage, entity);
++    register_spawned(stage, commands, entity);
+ }
+ 
+ pub fn add_light_at_focus(
+@@ -28,7 +28,7 @@ pub fn add_light_at_focus(
+ ) {
+     let position = orbit_focus(active_camera, storage);
+     let entity = add_light(commands, stage.materials, position, kind);
+-    register_spawned(stage, storage, entity);
++    register_spawned(stage, commands, entity);
+ }
+ 
+ pub fn add_primitive(commands: &mut Commands, position: Vec3, kind: PrimitiveKind) -> Entity {

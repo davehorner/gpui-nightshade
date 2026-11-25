@@ -532,7 +532,7 @@ diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
 new file mode 100644
 --- /dev/null
 +++ b/apps/viewer/src/core.rs
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,351 @@
 +//! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
 +pub use crate::data::*;
 +pub use crate::plugin::ViewerCorePlugin;
@@ -614,6 +614,181 @@ new file mode 100644
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn native_mcp_round_trip_edits_the_frontend_world() {
++        use serde_json::{Value, json};
++        use std::{
++            io::{Read, Write},
++            net::{TcpListener, TcpStream},
++            sync::mpsc,
++            time::{Duration, Instant},
++        };
++        fn call(port: u16, name: &str, arguments: Value) -> Value {
++            let body=json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string();
++            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
++            stream
++                .set_read_timeout(Some(Duration::from_secs(5)))
++                .unwrap();
++            write!(stream,"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
++            let mut response = String::new();
++            stream.read_to_string(&mut response).unwrap();
++            let (_, body) = response.split_once("\r\n\r\n").unwrap();
++            let response: Value = serde_json::from_str(body).unwrap();
++            assert!(response.get("error").is_none(), "{response}");
++            response["result"]["structuredContent"].clone()
++        }
++        let reservation = TcpListener::bind(("127.0.0.1", 0)).unwrap();
++        let port = reservation.local_addr().unwrap().port();
++        drop(reservation);
++        let mut app = compose(
++            ViewerArguments {
++                preview: true,
++                agent_port: Some(port),
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        submit(
++            &mut app.world,
++            ViewerAction::AddPrimitive(PrimitiveKind::Cube),
++        )
++        .unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let entity = snapshot(&app.world).nodes[0].entity;
++        let (sender, receiver) = mpsc::channel();
++        let client = std::thread::spawn(move || {
++            let scene = call(port, "get_scene", json!({}));
++            assert!(
++                scene["nodes"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|node| node["entity"] == entity.id)
++            );
++            call(port, "select_entity", json!({"entity":entity.id}));
++            call(
++                port,
++                "rename_entity",
++                json!({"entity":entity.id,"name":"From MCP"}),
++            );
++            call(
++                port,
++                "set_transform",
++                json!({"entity":entity.id,"translation":[5.,2.,1.]}),
++            );
++            let transform = call(port, "get_transform", json!({"entity":entity.id}));
++            sender.send(transform).unwrap();
++        });
++        let deadline = Instant::now() + Duration::from_secs(10);
++        let result = loop {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++            if let Ok(result) = receiver.try_recv() {
++                break result;
++            }
++            assert!(Instant::now() < deadline, "MCP client did not complete");
++            std::thread::sleep(Duration::from_millis(1));
++        };
++        client.join().unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let state = snapshot(&app.world);
++        assert_eq!(result["translation"], json!([5., 2., 1.]));
++        assert_eq!(state.selection.name, "From MCP");
++        assert_eq!(state.selection.translation, [5., 2., 1.]);
++        assert!(
++            !app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
++        let mut crew = app
++            .world
++            .res::<crate::resources::ViewerResources>()
++            .incoming
++            .crew
++            .clone();
++        crate::commands::crew::wait_for_the_crew(&mut crew);
++    }
++
++    #[test]
++    fn light_and_camera_edits_use_core_dispatch_and_history() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        submit(&mut app.world, ViewerAction::AddLight(LightKind::Spot)).unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let before = snapshot(&app.world).selection.light.unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetLightField(LightField::Intensity(42.)),
++        )
++        .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetLightField(LightField::Color([0.2, 0.4, 0.8])),
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let edited = snapshot(&app.world).selection.light.unwrap();
++        assert_eq!(edited.intensity, 42.);
++        assert_eq!(edited.color, [0.2, 0.4, 0.8]);
++        submit(&mut app.world, ViewerAction::Undo).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(snapshot(&app.world).selection.light.unwrap(), before);
++        let camera = app
++            .world
++            .res::<nightshade_camera::resources::ActiveCamera>()
++            .0
++            .unwrap();
++        submit(&mut app.world, ViewerAction::Select(Some(camera))).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let original = snapshot(&app.world).selection.camera.unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetCameraField(CameraField::Near(0.3)),
++        )
++        .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetCameraField(CameraField::Far(100.)),
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let edited = snapshot(&app.world).selection.camera.unwrap();
++        assert_eq!(edited.near, 0.3);
++        assert_eq!(edited.far, 100.);
++        submit(&mut app.world, ViewerAction::Undo).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(snapshot(&app.world).selection.camera.unwrap(), original);
++    }
 +    #[test]
 +    fn original_native_frontend_still_composes_and_starts() {
 +        let mut app = nightshade_app::commands::compose_embedded(

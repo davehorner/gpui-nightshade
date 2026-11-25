@@ -13,6 +13,9 @@ build:
 test:
     cargo test --workspace --locked
 
+test-core:
+    cargo test --manifest-path upstream/nightshade/Cargo.toml -p viewer --lib core::tests --locked --target-dir target/upstream-check
+
 test-gpu:
     cargo test -p gpui-nightshade --locked -- --include-ignored
 

@@ -1,3 +1,4 @@
+use gpui_kit::base::Disableable;
 use gpui_kit::{
     component::{
         button::Button,
@@ -11,8 +12,8 @@ use gpui_nightshade_components::{
     gpui_kit::{self, *},
 };
 use nightshade_viewer_core::{
-    GizmoMode, MaterialField, PrimitiveKind, ViewerAction as Action, ViewerArguments,
-    ViewerConnection, ViewerSnapshot,
+    CameraField, GizmoMode, LightField, LightKind, MaterialField, PrimitiveKind, TextureSlot,
+    ViewerAction as Action, ViewerArguments, ViewerConnection, ViewerSnapshot,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -25,6 +26,7 @@ struct Editor {
     _poll: Option<Task<()>>,
     message: String,
     overlay: bool,
+    field_selection: Option<(u32, u32)>,
 }
 impl Editor {
     fn new(
@@ -42,6 +44,20 @@ impl Editor {
             "Roughness",
             "Exposure",
             "Animation time",
+            "Base color RGBA",
+            "Emissive RGB",
+            "Emissive strength",
+            "Transmission",
+            "IOR",
+            "Light RGB",
+            "Intensity",
+            "Range",
+            "Inner cone degrees",
+            "Outer cone degrees",
+            "Field of view degrees",
+            "Near",
+            "Far (0 = infinite)",
+            "Playback speed",
         ];
         let fields: Vec<_> = labels
             .iter()
@@ -90,6 +106,7 @@ impl Editor {
             _poll: Some(poll),
             message: String::new(),
             overlay: false,
+            field_selection: None,
         }
     }
     fn send(&mut self, action: Action, cx: &mut Context<Self>) {
@@ -102,15 +119,8 @@ impl Editor {
     }
     fn apply_field(&mut self, index: usize, cx: &mut Context<Self>) {
         let value = self.fields[index].read(cx).value().to_string();
-        let scalar = || value.trim().parse::<f32>().ok().filter(|v| v.is_finite());
-        let vector = || {
-            let values: Option<Vec<f32>> = value
-                .split([',', ' '])
-                .filter(|v| !v.is_empty())
-                .map(|v| v.parse::<f32>().ok().filter(|v| v.is_finite()))
-                .collect();
-            values.and_then(|v| v.try_into().ok())
-        };
+        let scalar = || finite_scalar(&value);
+        let vector = || finite_vector::<3>(&value);
         let action = match index {
             0 => Some(Action::Rename(value.clone())),
             1 => vector().map(Action::SetTranslation),
@@ -123,6 +133,73 @@ impl Editor {
                 .map(|v| Action::SetMaterialField(MaterialField::Roughness(v.clamp(0., 1.)))),
             6 => scalar().map(Action::SetExposure),
             7 => scalar().map(Action::SeekAnimation),
+            8 => finite_vector::<4>(&value).map(|v| {
+                Action::SetMaterialField(MaterialField::BaseColor(v.map(|v| v.clamp(0., 1.))))
+            }),
+            9 => vector()
+                .map(|v| Action::SetMaterialField(MaterialField::Emissive(v.map(|v| v.max(0.))))),
+            10 => scalar()
+                .filter(|v| *v >= 0.)
+                .map(|v| Action::SetMaterialField(MaterialField::EmissiveStrength(v))),
+            11 => scalar()
+                .filter(|v| (0.0..=1.0).contains(v))
+                .map(|v| Action::SetMaterialField(MaterialField::Transmission(v))),
+            12 => scalar()
+                .filter(|v| *v >= 1.)
+                .map(|v| Action::SetMaterialField(MaterialField::Ior(v))),
+            13 => vector()
+                .filter(|v| v.iter().all(|v| *v >= 0.))
+                .map(|v| Action::SetLightField(LightField::Color(v))),
+            14 => scalar()
+                .filter(|v| *v >= 0.)
+                .map(|v| Action::SetLightField(LightField::Intensity(v))),
+            15 => scalar()
+                .filter(|v| *v >= 0.)
+                .map(|v| Action::SetLightField(LightField::Range(v))),
+            16 => scalar()
+                .filter(|v| {
+                    *v >= 0.
+                        && *v
+                            <= self
+                                .snapshot
+                                .as_ref()
+                                .and_then(|s| s.selection.light.as_ref())
+                                .map_or(90., |l| l.outer_cone)
+                })
+                .map(|v| Action::SetLightField(LightField::InnerCone(v))),
+            17 => scalar()
+                .filter(|v| {
+                    *v <= 90.
+                        && *v
+                            >= self
+                                .snapshot
+                                .as_ref()
+                                .and_then(|s| s.selection.light.as_ref())
+                                .map_or(0., |l| l.inner_cone)
+                })
+                .map(|v| Action::SetLightField(LightField::OuterCone(v))),
+            18 => scalar()
+                .filter(|v| *v > 0. && *v < 180.)
+                .map(|v| Action::SetCameraField(CameraField::FieldOfView(v))),
+            19 => scalar()
+                .filter(|v| {
+                    *v > 0.
+                        && self
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.selection.camera.as_ref())
+                            .is_some_and(|c| c.far == 0. || *v < c.far)
+                })
+                .map(|v| Action::SetCameraField(CameraField::Near(v))),
+            20 => scalar()
+                .filter(|v| {
+                    self.snapshot
+                        .as_ref()
+                        .and_then(|s| s.selection.camera.as_ref())
+                        .is_some_and(|c| (*v == 0. && c.perspective) || *v > c.near)
+                })
+                .map(|v| Action::SetCameraField(CameraField::Far(v))),
+            21 => scalar().filter(|v| *v > 0.).map(Action::SetAnimationSpeed),
             _ => None,
         };
         if let Some(action) = action {
@@ -135,6 +212,9 @@ impl Editor {
     fn sync_fields(&self, snapshot: &ViewerSnapshot, window: &mut Window, cx: &mut Context<Self>) {
         let vector = |v: [f32; 3]| format!("{:.3}, {:.3}, {:.3}", v[0], v[1], v[2]);
         let selection = &snapshot.selection;
+        let light = selection.light.as_ref();
+        let camera = selection.camera.as_ref();
+        let material = &selection.material_values;
         let values = [
             selection.name.clone(),
             vector(selection.translation),
@@ -144,6 +224,20 @@ impl Editor {
             format!("{:.3}", selection.material_values.roughness),
             format!("{:.3}", snapshot.settings.color_grading.exposure),
             format!("{:.3}", snapshot.animation.time),
+            material.base_color.map(|v| format!("{v:.3}")).join(", "),
+            vector(material.emissive),
+            format!("{:.3}", material.emissive_strength),
+            format!("{:.3}", material.transmission),
+            format!("{:.3}", material.ior),
+            vector(light.map_or([1.; 3], |v| v.color)),
+            format!("{:.3}", light.map_or(0., |v| v.intensity)),
+            format!("{:.3}", light.map_or(0., |v| v.range)),
+            format!("{:.3}", light.map_or(0., |v| v.inner_cone)),
+            format!("{:.3}", light.map_or(0., |v| v.outer_cone)),
+            format!("{:.3}", camera.map_or(60., |v| v.field_of_view)),
+            format!("{:.3}", camera.map_or(0.1, |v| v.near)),
+            format!("{:.3}", camera.map_or(0., |v| v.far)),
+            format!("{:.3}", snapshot.animation.speed),
         ];
         for (field, value) in self.fields.iter().zip(values) {
             if !field.focus_handle(cx).is_focused(window)
@@ -160,7 +254,13 @@ impl Editor {
         action: Action,
         cx: &mut Context<Self>,
     ) -> Button {
+        let disabled = match &action {
+            Action::Undo => self.snapshot.as_ref().is_none_or(|s| !s.can_undo),
+            Action::Redo => self.snapshot.as_ref().is_none_or(|s| !s.can_redo),
+            _ => false,
+        };
         Button::new(id)
+            .disabled(disabled)
             .label(label)
             .on_click(cx.listener(move |view, _, _, cx| view.send(action.clone(), cx)))
     }
@@ -169,6 +269,15 @@ impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
         if let Some(snapshot) = &snapshot {
+            let selected = snapshot.selection.selected.map(|e| (e.id, e.generation));
+            if selected != self.field_selection {
+                if self.fields.iter().enumerate().any(|(i, field)| {
+                    i != 6 && i != 7 && i != 21 && field.focus_handle(cx).is_focused(window)
+                }) {
+                    window.focus(&self.viewport.focus_handle(cx), cx);
+                }
+                self.field_selection = selected;
+            }
             self.sync_fields(snapshot, window, cx);
         }
         let mut tree = div()
@@ -249,11 +358,22 @@ impl Render for Editor {
                         ))
                         .child(self.action_button("delete", "Delete", Action::DeleteSelected, cx)),
                 );
-                if snapshot.selection.material.is_some() {
+                if snapshot.selection.material.is_some()
+                    && snapshot.selection.light.is_none()
+                    && snapshot.selection.camera.is_none()
+                {
                     inspector = inspector
                         .child("MATERIAL")
                         .child(snapshot.selection.material.clone().unwrap());
-                    for (index, label) in [(4, "Metallic"), (5, "Roughness")] {
+                    for (index, label) in [
+                        (8, "Base color RGBA"),
+                        (4, "Metallic"),
+                        (5, "Roughness"),
+                        (9, "Emissive RGB"),
+                        (10, "Emissive strength"),
+                        (11, "Transmission"),
+                        (12, "Index of refraction"),
+                    ] {
                         inspector = inspector
                             .child(label)
                             .child(Input::new(&self.fields[index]));
@@ -265,17 +385,119 @@ impl Render for Editor {
                         cx,
                     ));
                 }
+                if snapshot.selection.material.is_some()
+                    && snapshot.selection.light.is_none()
+                    && snapshot.selection.camera.is_none()
+                {
+                    let values = &snapshot.selection.material_values;
+                    inspector = inspector
+                        .child(self.action_button(
+                            "unlit",
+                            "Toggle unlit",
+                            Action::SetMaterialField(MaterialField::Unlit(!values.unlit)),
+                            cx,
+                        ))
+                        .child(self.action_button(
+                            "double-sided",
+                            "Toggle double sided",
+                            Action::SetMaterialField(MaterialField::DoubleSided(
+                                !values.double_sided,
+                            )),
+                            cx,
+                        ));
+                    for slot in TextureSlot::ALL {
+                        let texture = values
+                            .textures
+                            .iter()
+                            .find(|(s, _)| *s == slot)
+                            .map(|(_, name)| name.as_str())
+                            .unwrap_or("None");
+                        inspector = inspector
+                            .child(format!("{}: {}", slot.label(), texture))
+                            .child(
+                                Button::new(("replace-texture", slot as usize))
+                                    .label(format!("Replace {}", slot.label()))
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.send(Action::ReplaceTexture(slot), cx)
+                                    })),
+                            );
+                        if texture != "None" {
+                            inspector = inspector.child(
+                                Button::new(("clear-texture", slot as usize))
+                                    .label("Remove texture")
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.send(
+                                            Action::SetMaterialField(MaterialField::Texture(
+                                                slot, None,
+                                            )),
+                                            cx,
+                                        )
+                                    })),
+                            );
+                        }
+                    }
+                }
                 if let Some(light) = &snapshot.selection.light {
-                    inspector = inspector.child(format!(
-                        "Light intensity {:.2} · range {:.2}",
-                        light.intensity, light.range
+                    inspector = inspector.child("LIGHT");
+                    for (index, label) in [(13, "Color RGB"), (14, "Intensity")] {
+                        inspector = inspector
+                            .child(label)
+                            .child(Input::new(&self.fields[index]));
+                    }
+                    if light.kind != 0 {
+                        inspector = inspector.child("Range").child(Input::new(&self.fields[15]));
+                    }
+                    if light.kind == 2 {
+                        for (index, label) in
+                            [(16, "Inner cone (degrees)"), (17, "Outer cone (degrees)")]
+                        {
+                            inspector = inspector
+                                .child(label)
+                                .child(Input::new(&self.fields[index]));
+                        }
+                    }
+                    inspector = inspector.child(self.action_button(
+                        "shadows",
+                        "Toggle shadows",
+                        Action::SetLightField(LightField::CastShadows(!light.cast_shadows)),
+                        cx,
                     ));
                 }
                 if let Some(camera) = &snapshot.selection.camera {
-                    inspector = inspector.child(format!(
-                        "Camera FOV {:.2} · near {:.3} · far {:.1}",
-                        camera.field_of_view, camera.near, camera.far
-                    ));
+                    inspector = inspector
+                        .child("CAMERA")
+                        .child(self.action_button(
+                            "use-camera",
+                            "Use selected camera",
+                            Action::SetActiveCamera(snapshot.selection.selected),
+                            cx,
+                        ))
+                        .child(self.action_button(
+                            "editor-camera",
+                            "Use editor camera",
+                            Action::SetActiveCamera(None),
+                            cx,
+                        ));
+                    if camera.perspective {
+                        inspector = inspector
+                            .child("Vertical FOV (degrees)")
+                            .child(Input::new(&self.fields[18]));
+                    }
+                    for (index, label) in [
+                        (19, "Near clip"),
+                        (
+                            20,
+                            if camera.perspective {
+                                "Far clip (0 = infinite)"
+                            } else {
+                                "Far clip"
+                            },
+                        ),
+                    ] {
+                        inspector = inspector
+                            .child(label)
+                            .child(Input::new(&self.fields[index]));
+                    }
                 }
             } else {
                 inspector = inspector.child("Select an entity in the hierarchy or viewport");
@@ -303,6 +525,14 @@ impl Render for Editor {
                 .child(self.action_button("play", "Play / pause", Action::TogglePlayback, cx))
                 .child(self.action_button("stop", "Stop", Action::StopAnimation, cx))
                 .child(Input::new(&self.fields[7]).w(px(100.)))
+                .child("Speed")
+                .child(Input::new(&self.fields[21]).w(px(70.)))
+                .child(self.action_button(
+                    "loop",
+                    "Toggle loop",
+                    Action::SetAnimationLoop(!snapshot.animation.looping),
+                    cx,
+                ))
                 .child(format!(
                     "{:.2} / {:.2}s · {} clips",
                     snapshot.animation.time,
@@ -355,12 +585,25 @@ impl Render for Editor {
                     .gap_2()
                     .p_2()
                     .items_center()
+                    .flex_wrap()
                     .child("NIGHTSHADE")
                     .child(self.action_button("open", "Open model", Action::ImportFile, cx))
                     .child(self.action_button(
                         "cube",
                         "Add cube",
                         Action::AddPrimitive(PrimitiveKind::Cube),
+                        cx,
+                    ))
+                    .child(self.action_button(
+                        "point-light",
+                        "Add point light",
+                        Action::AddLight(LightKind::Point),
+                        cx,
+                    ))
+                    .child(self.action_button(
+                        "spot-light",
+                        "Add spot light",
+                        Action::AddLight(LightKind::Spot),
                         cx,
                     ))
                     .child(self.action_button("frame", "Frame", Action::FrameModel, cx))
@@ -479,4 +722,32 @@ pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
             .expect("open viewer");
             cx.activate(true);
         });
+}
+
+fn finite_scalar(value: &str) -> Option<f32> {
+    value.trim().parse::<f32>().ok().filter(|v| v.is_finite())
+}
+fn finite_vector<const N: usize>(value: &str) -> Option<[f32; N]> {
+    value
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|v| !v.is_empty())
+        .map(finite_scalar)
+        .collect::<Option<Vec<_>>>()?
+        .try_into()
+        .ok()
+}
+#[cfg(test)]
+mod tests {
+    use super::{finite_scalar, finite_vector};
+    #[test]
+    fn numeric_edits_reject_nonfinite_values_and_wrong_vector_dimensions() {
+        assert_eq!(finite_vector::<3>("1, -2  3e2"), Some([1., -2., 300.]));
+        assert_eq!(finite_vector::<4>("1, 0, 0, 1"), Some([1., 0., 0., 1.]));
+        for text in ["NaN", "inf", "-inf", "1e99"] {
+            assert_eq!(finite_scalar(text), None);
+        }
+        for text in ["1,2", "1,2,3,4", "1,NaN,3"] {
+            assert_eq!(finite_vector::<3>(text), None);
+        }
+    }
 }
