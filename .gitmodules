@@ -1,0 +1,9 @@
+[submodule "upstream/nightshade"]
+    path = upstream/nightshade
+    url = https://github.com/matthewjberger/nightshade
+[submodule "upstream/zed"]
+    path = upstream/zed
+    url = https://github.com/zed-industries/zed
+[submodule "upstream/gpui-component"]
+    path = upstream/gpui-component
+    url = https://github.com/longbridge/gpui-component
