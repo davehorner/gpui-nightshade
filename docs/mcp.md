@@ -12,11 +12,35 @@ Successful calls use `isError: false`; execution or argument errors use `isError
 
 Argument schemas reject unknown properties. Required arguments cannot be skipped using null. Numeric arguments must fit finite 32-bit values. Clip/layer/morph indices are checked before actions are queued; weights must be in `[0,1]`, and animation times must be nonnegative. Empty undo/redo history produces a tool error. JSON-RPC notifications never enqueue tool mutations.
 
+## Tracked scene application
+
+Queued scene edits now retain their existing response fields and add `operation_id` and `operation_status: "queued"`. Call `get_operation` with that ID until its status is `applied` or `failed`. `queued` and `dispatched` are nonterminal. Results include the tool name, submitted/finished scene-update tick, a retained post-update state snapshot, and an error for failed operations.
+
+The completion boundary is explicitly `scene_actions_applied`. It means the native action batch and subsequent viewer update chain ran. It does **not** prove that a GPU frame rendered, reached the compositor, or became visible. Snapshots represent state at the end of the update and can include other edits made during that update; they are not rollback transactions. Native clamps and action semantics still apply. Tick numbers identify viewer updates, not scene revisions or frame IDs.
+
+Tracking covers selection, creation/deletion, visibility/rename/isolation, undo/redo, playback/animation/layers/morphs, render settings, camera activation and framing. Transform/material/light edits already execute synchronously and return effective values; they retain that contract. File loading, screenshots, export and dialogs do **not** receive operation IDs yet: their workers need correlated success/error reporting before those outcomes can be tracked truthfully.
+
+Operation history retains up to 256 records. Pending records are never evicted; a full pending tracker rejects new tracked edits before they change state. Terminal records are evicted oldest-first as new work arrives. IDs become invalid after eviction or restart; unknown IDs return tool errors. Each retained result is limited to 64 KiB; larger state snapshots return `state_omitted: true` and clients must query current scene state separately. Explicit targets retain their ECS generation while queued; disappearing targets fail the batch before its actions run. Invalid arguments remain immediate tool errors and do not leave a pending operation.
+
+```json
+{"name":"set_playback","arguments":{"playing":false}}
+```
+
+The response includes an `operation_id`. Use it in:
+
+```json
+{"name":"get_operation","arguments":{"operation_id":"<returned ID>"}}
+```
+
+The cinematic client's `call_applied` helper performs this bounded wait for tracked scene actions. Native clip setup and pause use it; loading still uses the existing scene readiness checks. Continuous morph and camera updates can continue using `call` when no completion wait is needed.
+
 ## Additional tools
 
 | Tool | Arguments | Behavior |
 | --- | --- | --- |
 | `set_transforms` | `transforms`: 1–128 transform argument objects | Validate all targets/values before applying them in one stage; return post-edit transforms and record grouped history. Duplicate entities are rejected. |
+| `get_operation` | `operation_id` | Read tracked scene application status and retained effective state. |
+| `set_playback` | `playing`: boolean | Queue an idempotent desired playback state; evaluated when the native action runs. Requires clips. |
 | `toggle_playback` | `{}` | Queue pause/resume through the existing animation action; requires clips. |
 | `set_animation` | Optional `time`, `speed`, `looping`, `blend_time` | Queue the existing animation actions. Time is seconds; blend time can be configured before clips load. |
 | `set_animation_layer_weight` | `index`, `weight` | Queue an existing layer's weight change. |
@@ -36,3 +60,5 @@ Calls have a 20-second deadline and the pending queue is bounded to 256 entries.
 ## Cinematic example
 
 [The dependency-free Python example](../examples/mcp-cinematic/README.md) resolves actual animated models remotely first, falls back to validated cache/bundled models, and then uses seeded RNG selection. It always includes AnimatedMorphCube and a real skinned coiled spring, then adds RNG-selected models. It plays native clips, edits morph weights and moves the camera through MCP. The coiled spring is a documented local reconstruction with 13 joints and compression/bending clips. Original skin/joint/animation data are preserved. The earlier procedural crystal demo is optional via `--procedural`.
+
+Operation-tracking validation adds native HTTP checks for queued IDs, retained effective render state, unknown/malformed IDs and snapshot stability after later edits. Core regressions cover stale-target failure before batch execution, bounded retention and repeated explicit playback states. A separate rebuilt viewer was queried over localhost using the Python client: render settings, repeated play/pause, new light components and actual ECS morph weights matched retained applied results. This was scene-state validation; it did not assert GPU presentation or file-worker completion.

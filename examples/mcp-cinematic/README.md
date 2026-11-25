@@ -69,3 +69,7 @@ python -m unittest discover -s examples/mcp-cinematic -p 'test_*.py'
 `--objects` and `--shape` apply only to that optional demo. The default uses downloaded or local actual model assets.
 
 Tests cover remote-before-RNG ordering, deterministic choices, remote validation and local fallback, preservation of skin/animation data when adding a camera, and procedural geometry/animation checks. Live shared-GPU checks selected remote AnimatedMorphSphere + Fox and, with an empty cache and failed remote handshakes, bundled AnimatedMorphCube + Fox. Both acts loaded, played native clips, moved the camera and produced inspected engine captures. The local Fox contains 24 skin joints. A separate live run rendered the required cube and actual coiled spring, playing its native compression clip with 13 skin joints.
+
+## Scene application acknowledgements
+
+This client requires `get_operation` and `set_playback`. Native clip setup and pause wait for their returned operation IDs to reach `applied`; repeated pause requests cannot resume playback. `Mcp.call_applied` returns the retained operation result and raises on failure or a bounded wait timeout. This confirms native scene application, not GPU presentation. Model loading and screenshot writing remain asynchronous and do not yet have correlated completion IDs.

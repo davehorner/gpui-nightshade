@@ -241,7 +241,8 @@ class Mcp:
         required = {"load_file", "get_scene", "get_viewer_state", "set_transform", "get_transform",
                     "set_active_camera", "set_render", "set_handle_mode", "select_entity",
                     "play_clip", "stop_animation", "set_animation", "get_animation",
-                    "toggle_playback", "get_morph_weights", "set_morph_weight"}
+                    "toggle_playback", "get_morph_weights", "set_morph_weight",
+                    "get_operation", "set_playback"}
         missing = required - {tool["name"] for tool in tools}
         if missing:
             raise RuntimeError(f"Viewer is missing tools: {sorted(missing)}")
@@ -254,6 +255,25 @@ class Mcp:
         if "structuredContent" in result:
             return result["structuredContent"]
         return json.loads(result["content"][0]["text"])
+
+
+    def wait_operation(self, operation_id, timeout=10):
+        """Wait for native scene application; this does not prove GPU presentation."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            operation = self.call("get_operation", operation_id=operation_id)
+            if operation["status"] == "applied":
+                return operation
+            if operation["status"] == "failed":
+                raise RuntimeError(f"{operation_id}: {operation['error']}")
+            time.sleep(0.02)
+        raise TimeoutError(f"{operation_id}: scene application did not finish in {timeout}s")
+
+    def call_applied(self, name, **arguments):
+        result = self.call(name, **arguments)
+        if "operation_id" not in result:
+            raise RuntimeError(f"{name} does not provide tracked scene application")
+        return self.wait_operation(result["operation_id"])
 
 
 def wait_for_scene(client, objects, scene_name, timeout=30):
@@ -294,9 +314,9 @@ def run(args):
         if time.monotonic() > deadline:
             raise RuntimeError("The cinematic camera was not activated.")
         time.sleep(0.05)
-    client.call("stop_animation")
-    client.call("set_animation", time=0, speed=1, looping=False, blend_time=0)
-    client.call("play_clip", index=0, blend_time=0)
+    client.call_applied("stop_animation")
+    client.call_applied("set_animation", time=0, speed=1, looping=False, blend_time=0)
+    client.call_applied("play_clip", index=0, blend_time=0)
     animation = wait_for_animation(client, lambda state: state["playing"] and state["time"] > 0)
     hero = entities[objects[0]["name"]]
     initial_weights = client.call("get_morph_weights", entity=hero)["weights"]
@@ -339,7 +359,7 @@ def run(args):
         # Pause and seek, preserving the final camera/object pose. Also runs on Ctrl+C.
         state = client.call("get_animation")
         if state["playing"]:
-            client.call("toggle_playback")
+            client.call_applied("set_playback", playing=False)
             wait_for_animation(client, lambda current: not current["playing"])
     if not verified_morph:
         raise RuntimeError("Playback ended before a nonzero morph pose could be verified; use a longer duration")

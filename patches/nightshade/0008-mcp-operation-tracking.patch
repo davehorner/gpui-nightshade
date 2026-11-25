@@ -1,0 +1,549 @@
+--- a/apps/viewer/src/lib.rs
++++ b/apps/viewer/src/lib.rs
+@@ -1,3 +1,5 @@
++#[cfg(not(target_arch = "wasm32"))]
++mod operations;
+ pub mod core;
+ mod commands;
+ mod components;
+--- a/apps/viewer/src/data.rs
++++ b/apps/viewer/src/data.rs
+@@ -60,6 +60,13 @@
+ 
+ #[derive(Clone, Debug, PartialEq)]
+ pub enum ViewerAction {
++    #[cfg(not(target_arch = "wasm32"))]
++    AgentBatch {
++        operation_id: String,
++        actions: Vec<ViewerAction>,
++        targets: Vec<Entity>,
++    },
++    SetPlayback(bool),
+     ToggleScenePanel,
+     ToggleInspectorPanel,
+     OpenAddMenu,
+@@ -794,6 +801,20 @@
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
+ #[serde(deny_unknown_fields)]
++pub struct PlaybackArgs {
++    pub playing: bool,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct OperationArgs {
++    pub operation_id: String,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct ScreenshotArgs {
+     pub path: Option<String>,
+ }
+--- a/apps/viewer/src/resources.rs
++++ b/apps/viewer/src/resources.rs
+@@ -997,6 +997,8 @@
+     pub gizmo: Gizmo,
+     pub view: ViewState,
+     pub animation: AnimationView,
++    #[cfg(not(target_arch = "wasm32"))]
++    pub operations: crate::operations::Operations,
+     pub actions: Vec<ViewerAction>,
+     pub handles: UiHandles,
+     pub layout: Layout,
+--- a/apps/viewer/src/commands/agent.rs
++++ b/apps/viewer/src/commands/agent.rs
+@@ -180,6 +180,92 @@
+     name: &str,
+     arguments: Value,
+ ) -> Result<Value, String> {
++    // File workers and dialogs do not yet carry correlated completion tokens.
++    // Never report their action-dispatch boundary as file completion.
++    let tracked = matches!(
++        name,
++        "select_entity"
++            | "delete_entity"
++            | "add_primitive"
++            | "add_light"
++            | "set_visible"
++            | "rename_entity"
++            | "isolate"
++            | "undo"
++            | "redo"
++            | "set_playback"
++            | "toggle_playback"
++            | "set_animation"
++            | "set_animation_layer_weight"
++            | "set_morph_weight"
++            | "play_clip"
++            | "stop_animation"
++            | "add_animation_layer"
++            | "remove_animation_layer"
++            | "set_render"
++            | "set_active_camera"
++            | "frame_model"
++    );
++    if !tracked {
++        return answer_call_inner(stage, storage, name, arguments);
++    }
++    let id = stage.viewer.operations.reserve(
++        name,
++        stage.viewer.history.frame,
++        arguments
++            .get("entity")
++            .and_then(Value::as_u64)
++            .and_then(|id| u32::try_from(id).ok()),
++    )?;
++    let start = stage.viewer.actions.len();
++    let mut targets = Vec::new();
++    if let Some(entity) = arguments
++        .get("entity")
++        .and_then(Value::as_u64)
++        .and_then(|id| u32::try_from(id).ok())
++        .and_then(|id| resolve(storage, id).ok())
++    {
++        targets.push(entity);
++    }
++    if matches!(
++        name,
++        "set_playback"
++            | "toggle_playback"
++            | "set_animation"
++            | "set_animation_layer_weight"
++            | "play_clip"
++            | "stop_animation"
++            | "add_animation_layer"
++            | "remove_animation_layer"
++    ) {
++        targets.extend(stage.viewer.model.roots.iter().copied());
++    }
++    match answer_call_inner(stage, storage, name, arguments) {
++        Ok(mut result) => {
++            let actions = stage.viewer.actions.split_off(start);
++            stage.viewer.actions.push(ViewerAction::AgentBatch {
++                operation_id: id.clone(),
++                actions,
++                targets,
++            });
++            result["operation_id"] = json!(id);
++            result["operation_status"] = json!("queued");
++            Ok(result)
++        }
++        Err(error) => {
++            stage.viewer.actions.truncate(start);
++            stage.viewer.operations.discard(&id);
++            Err(error)
++        }
++    }
++}
++
++fn answer_call_inner(
++    stage: &mut crate::resources::Stage<'_>,
++    storage: &mut nightshade::ecs::Storage,
++    name: &str,
++    arguments: Value,
++) -> Result<Value, String> {
+     if tool_list().iter().any(|tool| {
+         tool["name"] == name
+             && tool["inputSchema"]["properties"]
+@@ -189,6 +275,13 @@
+         take_arguments::<crate::data::Empty>(arguments.clone())?;
+     }
+     match name {
++        "get_operation" => {
++            let args: crate::data::OperationArgs = take_arguments(arguments)?;
++            if args.operation_id.len() > 128 {
++                return Err("invalid operation ID".into());
++            }
++            stage.viewer.operations.get(&args.operation_id)
++        }
+         "get_viewer_state" => Ok(viewer_state(stage)),
+         "get_scene" => Ok(scene_state(stage)),
+         "get_stats" => Ok(stats_state(stage)),
+@@ -398,6 +491,14 @@
+             }
+             push_action(stage, ViewerAction::Redo);
+             Ok(json!({ "redone": true, "queued": true }))
++        }
++        "set_playback" => {
++            let args: crate::data::PlaybackArgs = take_arguments(arguments)?;
++            if stage.viewer.model.clips.is_empty() {
++                return Err("there are no animation clips".into());
++            }
++            push_action(stage, ViewerAction::SetPlayback(args.playing));
++            Ok(json!({"queued": true}))
+         }
+         "toggle_playback" => {
+             if stage.viewer.model.clips.is_empty() {
+--- a/apps/viewer/src/queries/agent.rs
++++ b/apps/viewer/src/queries/agent.rs
+@@ -31,6 +31,7 @@
+ pub fn tool_list() -> Vec<Value> {
+     use enum2schema::mcp::tool;
+     vec![
++        tool::<crate::data::OperationArgs>("get_operation", "Read queued scene-edit application status and its post-edit state. Applied means native scene actions ran, not that a GPU frame was presented. IDs expire when bounded history is evicted or the viewer restarts."),
+         tool::<Empty>(
+             "get_viewer_state",
+             "Read which panels are open, the render settings, the handle mode, and the camera in use.",
+@@ -127,6 +128,7 @@
+             "get_animation",
+             "Read the clips, which one is playing, and the layers over it.",
+         ),
++        tool::<crate::data::PlaybackArgs>("set_playback", "Set animation playback explicitly. Repeating the same desired state does not toggle it."),
+         tool::<Empty>("toggle_playback", "Pause or resume animation playback."),
+         tool::<AnimationArgs>("set_animation", "Queue animation time, speed, looping, or blend duration changes."),
+         tool::<LayerWeightArgs>("set_animation_layer_weight", "Set a layer weight between zero and one."),
+--- a/apps/viewer/src/systems/agent.rs
++++ b/apps/viewer/src/systems/agent.rs
+@@ -14,3 +14,41 @@
+         }
+     }
+ }
++
++pub fn finish_operations(stage: crate::resources::Stage, storage: &mut nightshade::ecs::Storage) {
++    let ready = stage.viewer.operations.ready();
++    for (id, tool, target) in ready {
++        if tool == "set_morph_weight" {
++            let result = target
++                .ok_or_else(|| "operation target is missing".to_string())
++                .and_then(|id| crate::queries::agent::resolve(storage, id))
++                .and_then(|entity| {
++                    storage
++                        .get::<nightshade_render::components::morph::MorphWeights>(entity)
++                        .map(|w| serde_json::json!({"entity": entity.id, "weights": w.weights}))
++                        .ok_or_else(|| "the node has no morph weights".to_string())
++                });
++            stage
++                .viewer
++                .operations
++                .finish(&id, stage.viewer.history.frame, result);
++            continue;
++        }
++        let result = match tool.as_str() {
++            "set_playback"
++            | "toggle_playback"
++            | "set_animation"
++            | "set_animation_layer_weight"
++            | "play_clip"
++            | "stop_animation"
++            | "add_animation_layer"
++            | "remove_animation_layer" => crate::queries::agent::animation_state(&stage),
++            "add_primitive" | "add_light" | "delete_entity" | "rename_entity" | "set_visible"
++            | "isolate" => crate::queries::agent::scene_state(&stage),
++            "select_entity" | "undo" | "redo" => crate::queries::agent::selection_state(&stage),
++            _ => crate::queries::agent::viewer_state(&stage),
++        };
++        let tick = stage.viewer.history.frame;
++        stage.viewer.operations.finish(&id, tick, Ok(result));
++    }
++}
+--- a/apps/viewer/src/systems/actions.rs
++++ b/apps/viewer/src/systems/actions.rs
+@@ -51,6 +51,30 @@
+     let active_camera = stage.active_camera.0;
+ 
+     match action {
++        #[cfg(not(target_arch = "wasm32"))]
++        ViewerAction::AgentBatch {
++            operation_id,
++            actions,
++            targets,
++        } => {
++            if targets.iter().any(|e| !storage.is_alive(*e)) {
++                stage.viewer.operations.finish(
++                    &operation_id,
++                    stage.viewer.history.frame,
++                    Err("an operation target no longer exists".into()),
++                );
++                return;
++            }
++            for action in actions {
++                apply_action(stage, storage, commands, action);
++            }
++            stage.viewer.operations.dispatched(&operation_id);
++        }
++        ViewerAction::SetPlayback(playing) => {
++            if stage.viewer.animation.playing != playing {
++                toggle_playback(stage, storage);
++            }
++        }
+         ViewerAction::ToggleScenePanel => {
+             let viewer = &mut *stage.viewer;
+             let narrow = viewer.layout.narrow;
+--- a/apps/viewer/src/plugin.rs
++++ b/apps/viewer/src/plugin.rs
+@@ -74,7 +74,14 @@
+         if self.persist_settings {
+             app.add_system(Stage::Update, systems::settings::save_settings);
+         }
++        #[cfg(not(target_arch = "wasm32"))]
++        app.add_system(Stage::Update, systems::agent::finish_operations);
+         let schedule = app.stages.stage_mut(Stage::Update.name());
++        #[cfg(not(target_arch = "wasm32"))]
++        schedule.order(
++            std::any::type_name_of_val(&systems::library::hold_preview_capture),
++            std::any::type_name_of_val(&systems::agent::finish_operations),
++        );
+         schedule.order(
+             std::any::type_name_of_val(&crate::core::advance_history),
+             std::any::type_name_of_val(&systems::gizmo::update_gizmo),
+--- a/apps/viewer/src/core.rs
++++ b/apps/viewer/src/core.rs
+@@ -353,6 +353,42 @@
+                     .iter()
+                     .any(|node| node["entity"] == entity.id)
+             );
++            let edit = call(port, "set_render", json!({"exposure":2.5}));
++            assert_eq!(edit["queued"], true);
++            assert_eq!(edit["operation_status"], "queued");
++            let deadline = Instant::now() + Duration::from_secs(3);
++            let applied = loop {
++                let operation = call(
++                    port,
++                    "get_operation",
++                    json!({"operation_id":edit["operation_id"]}),
++                );
++                if operation["status"] == "applied" {
++                    break operation;
++                }
++                assert_ne!(operation["status"], "failed", "{operation}");
++                assert!(Instant::now() < deadline, "{operation}");
++                std::thread::sleep(Duration::from_millis(1));
++            };
++            assert_eq!(applied["result"]["exposure"], 2.5);
++            assert_eq!(applied["completion_boundary"], "scene_actions_applied");
++            call(port, "set_render", json!({"exposure":1.0}));
++            assert_eq!(
++                call(
++                    port,
++                    "get_operation",
++                    json!({"operation_id":edit["operation_id"]})
++                ),
++                applied,
++                "operation results are retained snapshots, not later live state"
++            );
++            for args in [
++                json!({"operation_id":"unknown"}),
++                json!({}),
++                json!({"operation_id":edit["operation_id"],"typo":true}),
++            ] {
++                assert_eq!(raw_call(port, "get_operation", args)["isError"], true);
++            }
+             call(port, "select_entity", json!({"entity":entity.id}));
+             call(
+                 port,
+@@ -715,6 +751,13 @@
+         assert_eq!(initial.animation.layers.len(), 1);
+         assert_eq!(initial.animation.layers[0].weight, 0.5);
+         assert!(initial.skeleton_enabled);
++        for playing in [false, false, true, true] {
++            submit(&mut app.world, ViewerAction::SetPlayback(playing)).unwrap();
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++            assert_eq!(snapshot(&app.world).animation.playing, playing);
++        }
++
+         assert_eq!(initial.joint_count, 1);
+         submit(
+             &mut app.world,
+@@ -872,6 +915,61 @@
+             nightshade_camera::components::ShadingMode::Wireframe
+         ));
+     }
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn tracked_actions_fail_before_editing_when_their_target_disappears() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        let target = app
++            .world
++            .storage
++            .spawn((nightshade_scene::contract::Name("temporary".into()),));
++        let id = app
++            .world
++            .res_mut::<crate::resources::ViewerResources>()
++            .operations
++            .reserve("set_render", 0, None)
++            .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::AgentBatch {
++                operation_id: id.clone(),
++                actions: vec![ViewerAction::SetExposure(9.)],
++                targets: vec![target],
++            },
++        )
++        .unwrap();
++        app.world.storage.despawn_entities(&[target]);
++        let before = snapshot(&app.world).settings.color_grading.exposure;
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let operation = app
++            .world
++            .res::<crate::resources::ViewerResources>()
++            .operations
++            .get(&id)
++            .unwrap();
++        assert_eq!(operation["status"], "failed");
++        assert!(
++            operation["error"]
++                .as_str()
++                .unwrap()
++                .contains("no longer exists")
++        );
++        assert_eq!(snapshot(&app.world).settings.color_grading.exposure, before);
++    }
++
+     #[test]
+     fn original_native_frontend_still_composes_and_starts() {
+         let mut app = nightshade_app::commands::compose_embedded(
+--- /dev/null
++++ b/apps/viewer/src/operations.rs
+@@ -0,0 +1,133 @@
++use serde_json::{Value, json};
++use std::collections::VecDeque;
++
++const CAPACITY: usize = 256;
++
++#[derive(Default)]
++pub(crate) struct Operations {
++    entries: VecDeque<Operation>,
++}
++
++struct Operation {
++    id: String,
++    tool: String,
++    target: Option<u32>,
++    status: &'static str,
++    submitted_tick: u64,
++    finished_tick: Option<u64>,
++    result: Option<Value>,
++    error: Option<String>,
++}
++
++impl Operations {
++    pub fn reserve(
++        &mut self,
++        tool: &str,
++        tick: u64,
++        target: Option<u32>,
++    ) -> Result<String, String> {
++        if self.entries.len() == CAPACITY {
++            let index = self
++                .entries
++                .iter()
++                .position(|o| matches!(o.status, "applied" | "failed"))
++                .ok_or("the operation tracker is full; pending operations are retained")?;
++            self.entries.remove(index);
++        }
++        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++        let epoch = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap_or_default()
++            .as_nanos();
++        let id = format!("op-{epoch:x}-{sequence:x}");
++        self.entries.push_back(Operation {
++            id: id.clone(),
++            tool: tool.into(),
++            target,
++            status: "queued",
++            submitted_tick: tick,
++            finished_tick: None,
++            result: None,
++            error: None,
++        });
++        Ok(id)
++    }
++
++    pub fn discard(&mut self, id: &str) {
++        self.entries.retain(|o| o.id != id);
++    }
++
++    pub fn dispatched(&mut self, id: &str) {
++        if let Some(o) = self.entries.iter_mut().find(|o| o.id == id) {
++            o.status = "dispatched";
++        }
++    }
++
++    pub fn ready(&self) -> Vec<(String, String, Option<u32>)> {
++        self.entries
++            .iter()
++            .filter(|o| o.status == "dispatched")
++            .map(|o| (o.id.clone(), o.tool.clone(), o.target))
++            .collect()
++    }
++
++    pub fn finish(&mut self, id: &str, tick: u64, result: Result<Value, String>) {
++        if let Some(o) = self.entries.iter_mut().find(|o| o.id == id) {
++            o.finished_tick = Some(tick);
++            match result {
++                Ok(result) => {
++                    o.status = "applied";
++                    o.result = Some(if result.to_string().len() <= 65536 {
++                        result
++                    } else {
++                        json!({"state_omitted":true,"reason":"post-edit state exceeds 64 KiB; query the scene directly"})
++                    });
++                }
++                Err(error) => {
++                    o.status = "failed";
++                    o.error = Some(error);
++                }
++            }
++        }
++    }
++
++    pub fn get(&self, id: &str) -> Result<Value, String> {
++        let o = self
++            .entries
++            .iter()
++            .find(|o| o.id == id)
++            .ok_or("unknown or expired operation ID")?;
++        Ok(
++            json!({"operation_id":o.id, "tool":o.tool, "status":o.status,
++            "submitted_tick":o.submitted_tick, "finished_tick":o.finished_tick,
++            "result":o.result, "error":o.error,
++            "completion_boundary":"scene_actions_applied"}),
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn pending_records_are_bounded_and_never_evicted() {
++        let mut ops = Operations::default();
++        let first = ops.reserve("set_render", 0, None).unwrap();
++        for _ in 1..CAPACITY {
++            ops.reserve("set_render", 0, None).unwrap();
++        }
++        assert!(ops.reserve("set_render", 1, None).is_err());
++        assert_eq!(ops.get(&first).unwrap()["status"], "queued");
++        ops.finish(&first, 1, Err("target disappeared".into()));
++        let next = ops.reserve("set_render", 2, None).unwrap();
++        assert!(ops.get(&first).is_err());
++        assert_ne!(first, next);
++        ops.dispatched(&next);
++        assert_eq!(ops.ready(), vec![(next.clone(), "set_render".into(), None)]);
++        ops.finish(&next, 3, Ok(json!({"exposure":2.})));
++        let value = ops.get(&next).unwrap();
++        assert_eq!(value["status"], "applied");
++        assert_eq!(value["result"]["exposure"], 2.);
++    }
++}

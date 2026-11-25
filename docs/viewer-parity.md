@@ -19,7 +19,7 @@ Reference: pinned Nightshade trunk `630c74c973f1f1e047123f2fb3090be5a26ba6b9`, n
 | Rendering/atmosphere | Settings controls, effective-state tests and live tonemap menu | Atmosphere/AA/effect combinations and color/HDR validation |
 | Screenshot/GLB export | Native output dialogs and static/skinned reload observations | Broader output/dialog combinations |
 | Blender-assisted FBX | Single-path loader delegates to trunk conversion | Blender discovery/setup, progress/errors and complete UI validation |
-| Native MCP | Shared transform/material/light history; truthful errors, strict arguments, animation/morph tools; HTTP undo/redo checks | Modern transport negotiation, more shared-mode scene-edit stress |
+| Native MCP | Shared transform/material/light history; truthful errors, strict arguments, animation/morph tools, tracked scene application and idempotent playback; native HTTP checks | Modern transport negotiation, more shared-mode scene-edit stress |
 | Command palette | Search, keyboard selection, dynamic disabled state and current-snapshot confirmation | More command workflow coverage and shortcut hints |
 | Keyboard shortcuts | Palette, import/assets/history, framing, W/E/R, playback, output and deletion | Remaining native interface/browser/navigation bindings |
 | Dockable panels | Scene/viewport/inspector/animation, split/tab/reset/save/restore | Dedicated material/camera/asset/render/console arrangements; current inspector combines several roles |

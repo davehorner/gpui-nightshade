@@ -220,8 +220,8 @@ def show_model(client, asset, role, rng, args):
                 atmosphere=1, sky=True, sun_intensity=4, exposure=0.9, shading=0, pbr_debug=0)
     client.call("set_transform", entity=camera, **orbit_pose(0, center, size))
     client.call("set_active_camera", entity=camera)
-    client.call("set_animation", speed=rng.uniform(0.75, 1.25), looping=True, blend_time=0)
-    client.call("play_clip", index=clip["index"], blend_time=0)
+    client.call_applied("set_animation", speed=rng.uniform(0.75, 1.25), looping=True, blend_time=0)
+    client.call_applied("play_clip", index=clip["index"], blend_time=0)
     wait_for_animation(client, lambda a: a["playing"] and a["time"] > 0)
     morph = None
     if capability(role) == "morph":
@@ -244,7 +244,7 @@ def show_model(client, asset, role, rng, args):
             client.call("set_transform", entity=camera, **orbit_pose(t, center, size))
             if morph and t >= 0.65:
                 if not paused:
-                    client.call("toggle_playback")
+                    client.call_applied("set_playback", playing=False)
                     wait_for_animation(client, lambda a: not a["playing"])
                     paused = True
                 for index in range(morph[1]):
@@ -256,7 +256,7 @@ def show_model(client, asset, role, rng, args):
     finally:
         state = client.call("get_animation")
         if state["playing"]:
-            client.call("toggle_playback")
+            client.call_applied("set_playback", playing=False)
             wait_for_animation(client, lambda a: not a["playing"])
     if morph:
         print(f"  Verified native morph state: {client.call('get_morph_weights', entity=morph[0])}", flush=True)

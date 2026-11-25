@@ -16,6 +16,8 @@ Changes are isolated to nightshade-wgpu: optional-surface initialization retaini
 
 `0007-dx12-indirect-builtins.patch` disables the pinned wgpu 29 DirectX 12 indirect-count feature to retain correct vertex/instance base builtins through the existing indirect fallback. This fixes visible morph deformation in the bundled animated cube; rendered-pixel regressions cover explicit weights and playing clips in all four cameras. Vulkan negotiation remains unchanged and has a unit regression. See [shared cameras](shared-cameras.md).
 
+`0008-mcp-operation-tracking.patch` adds bounded operation IDs for queued scene edits, generation-aware target checks, retained effective-state results and an explicit scene-application completion boundary. It adds idempotent playback and keeps file/renderer worker acknowledgements untracked. Native HTTP and core regressions cover retained results, invalid IDs, tracker bounds, stale-target failure and repeated playback commands. See [MCP contract](mcp.md).
+
 ## GPUI
 
 `patches/gpui/0001-shared-external-images.patch` is a reviewable diff against the pristine `gpui-pre` and `gpui-pre-windows` 0.3.14 source exports. Paths are relative to `upstream/gpui-snapshot`; the source changes are already applied there. Export provenance is Zed `f126950f9d3b62666f97437ae5d4ccac2272c4db`, as declared by those published packages. Root Cargo patches select the local exports. Their normalized manifests are kept so the exact matching registry family remains usable without cloning the entire Zed dependency workspace.
