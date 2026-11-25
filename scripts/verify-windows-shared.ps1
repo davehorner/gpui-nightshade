@@ -3,7 +3,11 @@ param(
     [int]$Port = 19790,
     [int]$TimeoutSeconds = 600,
     [switch]$Stress,
-    [switch]$StaticScene
+    [switch]$StaticScene,
+    [ValidateSet("vulkan-shared", "windows-shared")]
+    [string]$Presentation = "vulkan-shared",
+    [ValidateSet(1,4)]
+    [int]$CameraViews = 1
 )
 $ErrorActionPreference = 'Stop'
 if ($Frames -lt 600) { throw 'Use at least 600 frames for shared-GPU acceptance.' }
@@ -34,7 +38,7 @@ try {
     $env:GPUI_NIGHTSHADE_LAYOUT = Join-Path $run 'layout.json'
     # This is an interactive compositor test: the viewer window must be shown,
     # otherwise visibility suspension correctly prevents all presentation work.
-    $process = Start-Process -FilePath $exe -ArgumentList @('--presentation=windows-shared',"--agent-port=$Port") -WorkingDirectory $root -WindowStyle Normal -PassThru -RedirectStandardError $log -RedirectStandardOutput (Join-Path $run 'stdout.log')
+    $process = Start-Process -FilePath $exe -ArgumentList @("--presentation=$Presentation", "--camera-views=$CameraViews", "--agent-port=$Port") -WorkingDirectory $root -WindowStyle Normal -PassThru -RedirectStandardError $log -RedirectStandardOutput (Join-Path $run 'stdout.log')
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $ready = $false
     $switched = $false
@@ -45,7 +49,7 @@ try {
         if ($process.HasExited) { throw "Viewer exited with code $($process.ExitCode); see $log" }
         $peakWorkingSet = [Math]::Max($peakWorkingSet, $process.WorkingSet64)
         [string]$logText = Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue
-        if ($logText -match 'worker stopped|device status: Err|panicked|D3D11_MESSAGE_SEVERITY\(1\)') {
+        if ($logText -match 'worker stopped|device status: Err|panicked|D3D11_MESSAGE_SEVERITY\(1\)|Validation Error|VK_ERROR_DEVICE_LOST') {
             throw "GPU validation reported a failure; see $log"
         }
         $progressMatches = [regex]::Matches($logText, 'Shared GPU (?:progress|heartbeat): [^\r\n]*?published=(\d+)')
@@ -90,11 +94,11 @@ try {
         if (!$scene.nodes.Count) { throw 'Static scene was not loaded.' }
     }
     [string]$finalLog = Get-Content -LiteralPath $log -Raw
-    if ($finalLog -match 'worker stopped|device status: Err|panicked|D3D11_MESSAGE_SEVERITY\(1\)') {
+    if ($finalLog -match 'worker stopped|device status: Err|panicked|D3D11_MESSAGE_SEVERITY\(1\)|Validation Error|VK_ERROR_DEVICE_LOST') {
         throw "GPU failure during final scene verification; see $log"
     }
     $report = @{
-        status='passed'; backend='windows-shared'; cpuReadbackFallback=$false
+        status='passed'; backend=$Presentation; cameraViews=$CameraViews; cpuReadbackFallback=$false
         lifecycleStress=[bool]$Stress; staticScene=[bool]$StaticScene; publishedFrames=$published; presentsSubmitted=$presents
         resizeGenerations=$resizeGenerations; suspensions=$suspensions; resumptions=$resumptions
         resolution='see stderr progress'; peakProcessWorkingSetBytes=$peakWorkingSet
@@ -103,7 +107,7 @@ try {
     $report | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
     Write-Output "Shared-GPU check passed: $run"
 } catch {
-    @{status='failed'; lifecycleStress=[bool]$Stress; staticScene=[bool]$StaticScene; backend='windows-shared'; publishedFrames=$published; presentsSubmitted=$presents; error=$_.Exception.Message; log=$log} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
+    @{status='failed'; lifecycleStress=[bool]$Stress; staticScene=[bool]$StaticScene; backend=$Presentation; publishedFrames=$published; presentsSubmitted=$presents; error=$_.Exception.Message; log=$log} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
     throw
 } finally {
     if ($process -and !$process.HasExited) { $process.Kill() }

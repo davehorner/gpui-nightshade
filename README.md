@@ -1,10 +1,10 @@
 # gpui-nightshade
 
-Native Rust Nightshade rendering inside GPUI elements. Windows has a working D3D12-to-D3D11 shared-texture presentation path, and a separate asynchronous CPU readback reference backend. GPUI owns the window and event loop. No browser, hidden Nightshade window, or second presenter is used.
+Native Rust Nightshade rendering inside GPUI elements. Windows supports Vulkan-to-D3D11 and D3D12-to-D3D11 shared-texture presentation, with a separate asynchronous CPU readback fallback. GPUI owns the window and event loop. No browser, hidden Nightshade window, or second presenter is used.
 
 **Status: the trunk viewer core and an initial GPUI editor are implemented; feature parity remains unfinished.** The default editor loads glTF/GLB through trunk's original schedules, displays the hierarchy and inspector, and dispatches scene edits, undo/redo, rendering settings and animation actions through the original action queue. See [implementation status](docs/status.md).
 
-The editor, demos and rendering helpers default to Vulkan with CPU readback, following the [long-animation benchmark](docs/benchmarks.md). Explicit Windows shared-GPU presentation now passes fresh full-viewer runs, model replacement and resize/minimize stress on the tested RTX 4080 after retaining evicted D3D11 imports through consumer completion. See [GPU validation](docs/windows-gpu-validation.md) for results and remaining coverage.
+The editor, demos and rendering helpers default to Vulkan with GPU sharing on supported Windows adapters and readback fallback, following the [long-animation benchmark](docs/benchmarks.md). Explicit Windows shared-GPU presentation now passes fresh full-viewer runs, model replacement and resize/minimize stress on the tested RTX 4080 after retaining evicted D3D11 imports through consumer completion. See [GPU validation](docs/windows-gpu-validation.md) for results and remaining coverage.
 
 ## Build and run
 
@@ -27,8 +27,8 @@ just fmt
 just clippy
 ```
 
-Equivalent editor launch: `cargo run -p gpui-nightshade-viewer -- --presentation=readback`. Use `--model=C:/models/scene.glb`, `--no-agent` or `--agent-port=PORT` as needed. The original native agent plugin is composed against the same worker-owned world; live GPUI selection/rename and HTTP core regression tests pass. See [viewer controls](docs/viewer.md).
-`--presentation=readback` forces CPU transfer. `windows-shared` requires the GPU backend and never falls back. `auto` uses Vulkan with readback. `windows-shared-auto` explicitly opts into DX12 shared presentation with readback fallback after allocation/import failure. `GPUI_NIGHTSHADE_PRESENTATION` supplies the default when no CLI selection is present.
+Equivalent editor launch: `cargo run -p gpui-nightshade-viewer`. Use `--model=C:/models/scene.glb`, `--no-agent` or `--agent-port=PORT` as needed. The original native agent plugin is composed against the same worker-owned world; live GPUI selection/rename and HTTP core regression tests pass. See [viewer controls](docs/viewer.md).
+`--presentation=readback` forces CPU transfer. `windows-shared` requires the GPU backend and never falls back. `auto` prefers Vulkan GPU sharing on Windows and falls back to Vulkan readback when allocation/import is unsupported. `vulkan-shared` forces Vulkan GPU sharing and reports errors instead of falling back. `windows-shared-auto` explicitly opts into DX12 shared presentation with readback fallback after allocation/import failure. `GPUI_NIGHTSHADE_PRESENTATION` supplies the default when no CLI selection is present.
 
 In the editor, left-click picks and left-drag manipulates gizmos; right-drag orbits, Shift+right-drag pans and the wheel zooms. The cube demo retains left-drag orbit and Shift+left-drag pan. Pointer coordinates are viewport-local physical pixels. The overlay button demonstrates GPUI content above the scene. `--multi-viewport` creates two independent scene hosts, not two cameras sharing one ECS.
 
@@ -42,7 +42,7 @@ In the editor, left-click picks and left-drag manipulates gizmos; right-drag orb
 | Compatible GPUI snapshot | `gpui-pre-* =0.3.14`, Zed `f126950f9d3b62666f97437ae5d4ccac2272c4db` | Exact family required by the component pin |
 | wgpu | `29.0.4` in Cargo.lock | Nightshade backend; DX12, Vulkan and Metal compiled upstream |
 
-Nightshade declares Rust 1.98 minimum; inspected Zed trunk pins 1.100.0. This workspace uses 1.100.0. GPUI Windows uses D3D11, not D3D12. Shared mode explicitly requests Nightshade DX12. Readback explicitly defaults to Vulkan. `WGPU_BACKEND` remains an explicit renderer override, for example `dx12` or `metal`; shared presentation always requires DX12. GPUI's Windows compositor continues to use D3D11.
+Nightshade declares Rust 1.98 minimum; inspected Zed trunk pins 1.100.0. This workspace uses 1.100.0. GPUI Windows uses D3D11, not D3D12. `windows-shared` explicitly requests Nightshade DX12; `vulkan-shared` retains Vulkan rendering. Readback explicitly defaults to Vulkan. `WGPU_BACKEND` remains an explicit renderer override, for example `dx12` or `metal`; Windows GPU sharing requires a matching adapter and supports Vulkan or DX12. GPUI's Windows compositor continues to use D3D11.
 
 GPUI snapshot packages are exported upstream sources under `upstream/gpui-snapshot`, with licenses intact and two patched packages selected by `[patch.crates-io]`. Other GPUI snapshot crates remain exact registry packages, locked with checksums. Do not replace them with Zed trunk independently: gpui-component's exact snapshot contract matters. Zed trunk's wgpu Git dependency is not unified with Nightshade's wgpu; these are separate rendering devices.
 

@@ -2987,6 +2987,7 @@ dependencies = [
 name = "gpui-nightshade-components"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "gpui-kit",
  "gpui-nightshade",
  "gpui-pre-windows",

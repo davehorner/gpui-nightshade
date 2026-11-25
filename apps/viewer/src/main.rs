@@ -10,7 +10,9 @@ fn main() {
         .or_else(|| std::env::var("GPUI_NIGHTSHADE_PRESENTATION").ok())
         .unwrap_or_else(|| "auto".into())
         .parse()
-        .expect("use --presentation=auto|readback|windows-shared|windows-shared-auto");
+        .expect(
+            "use --presentation=auto|readback|vulkan-shared|windows-shared|windows-shared-auto",
+        );
     if args
         .iter()
         .any(|arg| arg == "--cube" || arg == "--multi-viewport")

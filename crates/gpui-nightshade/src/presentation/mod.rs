@@ -58,6 +58,7 @@ impl CpuFrame {
 pub enum PresentationBackend {
     Readback,
     WindowsShared,
+    VulkanShared,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +70,7 @@ pub struct PresentationCapabilities {
 }
 impl PresentationBackend {
     pub fn capabilities(self) -> PresentationCapabilities {
-        let shared = self == Self::WindowsShared;
+        let shared = matches!(self, Self::WindowsShared | Self::VulkanShared);
         PresentationCapabilities {
             gpu_resident: shared,
             requires_matching_adapter: shared,
@@ -107,10 +108,11 @@ impl PresentationStatus {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BackendPreference {
-    /// Use the default Vulkan renderer with readback presentation.
+    /// Prefer Vulkan GPU sharing on Windows, falling back to Vulkan readback.
     #[default]
     Auto,
     Readback,
+    VulkanShared,
     WindowsShared,
     /// Opt in to DX12 sharing with automatic readback fallback.
     WindowsSharedAuto,
@@ -121,6 +123,7 @@ impl std::str::FromStr for BackendPreference {
         match value {
             "auto" => Ok(Self::Auto),
             "readback" => Ok(Self::Readback),
+            "vulkan-shared" => Ok(Self::VulkanShared),
             "windows-shared" => Ok(Self::WindowsShared),
             "windows-shared-auto" => Ok(Self::WindowsSharedAuto),
             _ => Err(format!("unknown presentation backend: {value}")),

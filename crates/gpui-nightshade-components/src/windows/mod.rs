@@ -1,4 +1,5 @@
-//! Unsafe D3D interop is confined to this module and GPUI's shared_texture importer.
+//! Native Windows GPU interop is confined to this module and GPUI's importer.
+mod vulkan;
 use gpui_nightshade::{presentation::FrameId, wgpu};
 use gpui_windows::shared_texture::{SharedFrameOwner, SharedHandle, SharedTexture};
 use std::sync::{
@@ -6,6 +7,86 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::*};
+
+/// Same immutable-frame contract for the two native Windows producers.
+pub(crate) enum PresentationRing {
+    Dx12(SharedRing),
+    Vulkan(vulkan::VulkanRing),
+}
+impl PresentationRing {
+    pub fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        match device.adapter_info().backend {
+            wgpu::Backend::Vulkan => Ok(Self::Vulkan(vulkan::VulkanRing::new(
+                device, width, height,
+            )?)),
+            wgpu::Backend::Dx12 => Ok(Self::Dx12(SharedRing::new(device, width, height)?)),
+            _ => Err("Windows GPU sharing requires Vulkan or DX12".into()),
+        }
+    }
+    pub fn check_device(&self) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Self::Dx12(r) => r.check_device(),
+            Self::Vulkan(r) => r.check_device(),
+        }
+    }
+    pub fn producer_idle(&self) -> bool {
+        match self {
+            Self::Dx12(r) => r.producer_idle(),
+            Self::Vulkan(r) => r.producer_idle(),
+        }
+    }
+    pub fn can_submit(&self) -> bool {
+        match self {
+            Self::Dx12(r) => r.can_submit(),
+            Self::Vulkan(r) => r.can_submit(),
+        }
+    }
+    pub fn queue_frame(&mut self, frame: Arc<SharedTexture>, id: FrameId) {
+        match self {
+            Self::Dx12(r) => r.queue_frame(frame, id),
+            Self::Vulkan(r) => r.queue_frame(frame, id),
+        }
+    }
+    pub fn pending_count(&self) -> usize {
+        match self {
+            Self::Dx12(r) => r.pending_count(),
+            Self::Vulkan(r) => r.pending_count(),
+        }
+    }
+    pub fn retire(&mut self) {
+        match self {
+            Self::Dx12(r) => r.retire(),
+            Self::Vulkan(r) => r.retire(),
+        }
+    }
+    pub fn retired_idle(&self) -> bool {
+        match self {
+            Self::Dx12(r) => r.retired_idle(),
+            Self::Vulkan(r) => r.retired_idle(),
+        }
+    }
+    pub fn take_ready(&mut self) -> Option<(Arc<SharedTexture>, FrameId)> {
+        match self {
+            Self::Dx12(r) => r.take_ready(),
+            Self::Vulkan(r) => r.take_ready(),
+        }
+    }
+    pub fn copy_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &wgpu::Texture,
+    ) -> Result<Option<Arc<SharedTexture>>, Box<dyn std::error::Error>> {
+        match self {
+            Self::Dx12(r) => r.copy_frame(device, queue, source),
+            Self::Vulkan(r) => r.copy_frame(device, queue, source),
+        }
+    }
+}
 
 struct Slot {
     texture: wgpu::Texture,

@@ -20,7 +20,7 @@ From the repository root, start a viewer:
 cargo run -p gpui-nightshade-viewer -- --agent-port=8791
 ```
 
-The default is Vulkan with readback. `--presentation=windows-shared` explicitly opts into DX12 GPU sharing. Keep the viewport visible. In a second terminal:
+The default is Vulkan GPU sharing where supported, with readback fallback. Use `--presentation=vulkan-shared` to require GPU-only pixel transport. `--presentation=windows-shared` explicitly opts into DX12 GPU sharing. Keep the viewport visible. In a second terminal:
 
 ```powershell
 python examples/mcp-cinematic/cinematic.py --seed 7

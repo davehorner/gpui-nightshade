@@ -104,9 +104,13 @@ impl Worker {
     }
     pub fn paint_failed(&self, error: String) {
         let mut state = self.shared.0.lock().unwrap();
-        if state.status.requested == BackendPreference::WindowsSharedAuto
-            && state.status.active == Some(PresentationBackend::WindowsShared)
-            && !state.fallback
+        if matches!(
+            state.status.requested,
+            BackendPreference::Auto | BackendPreference::WindowsSharedAuto
+        ) && matches!(
+            state.status.active,
+            Some(PresentationBackend::WindowsShared | PresentationBackend::VulkanShared)
+        ) && !state.fallback
         {
             state.fallback = true;
             // Do not hand another obsolete GPU image to the failing importer.
@@ -179,7 +183,7 @@ impl Drop for Worker {
 enum Transport {
     Readback(ReadbackRing),
     #[cfg(target_os = "windows")]
-    Shared(crate::windows::SharedRing),
+    Shared(crate::windows::PresentationRing),
 }
 impl Transport {
     fn new(
@@ -191,7 +195,7 @@ impl Transport {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         #[cfg(target_os = "windows")]
         if shared {
-            return Ok(Self::Shared(crate::windows::SharedRing::new(
+            return Ok(Self::Shared(crate::windows::PresentationRing::new(
                 &host.renderer().device,
                 width,
                 height,
@@ -291,19 +295,43 @@ fn run(
     factory: &crate::SceneFactory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let choice = shared.0.lock().unwrap().status.requested;
-    if choice == BackendPreference::WindowsShared && !cfg!(target_os = "windows") {
-        return Err("windows-shared is unavailable on this platform".into());
+    if matches!(
+        choice,
+        BackendPreference::WindowsShared | BackendPreference::VulkanShared
+    ) && !cfg!(target_os = "windows")
+    {
+        return Err("Windows GPU sharing is unavailable on this platform".into());
     }
     let mut gpu = cfg!(target_os = "windows")
         && matches!(
             choice,
-            BackendPreference::WindowsShared | BackendPreference::WindowsSharedAuto
+            BackendPreference::Auto
+                | BackendPreference::VulkanShared
+                | BackendPreference::WindowsShared
+                | BackendPreference::WindowsSharedAuto
         );
     let mut host = if gpu {
-        match (factory)(wgpu::Backends::DX12, 640, 480) {
+        let backends = if matches!(
+            choice,
+            BackendPreference::WindowsShared | BackendPreference::WindowsSharedAuto
+        ) {
+            wgpu::Backends::DX12
+        } else if choice == BackendPreference::VulkanShared {
+            wgpu::Backends::VULKAN
+        } else {
+            gpui_nightshade::default_backends()
+        };
+        match (factory)(backends, 640, 480) {
             Ok(host) => host,
-            Err(error) if choice == BackendPreference::WindowsSharedAuto => {
-                eprintln!("DX12 initialization unavailable: {error}; selecting readback");
+            Err(error)
+                if matches!(
+                    choice,
+                    BackendPreference::Auto | BackendPreference::WindowsSharedAuto
+                ) =>
+            {
+                eprintln!(
+                    "Shared renderer initialization unavailable: {error}; selecting readback"
+                );
                 shared.0.lock().unwrap().status.fallback_reason = Some(error.to_string());
                 gpu = false;
                 (factory)(gpui_nightshade::default_backends(), 640, 480)?
@@ -316,7 +344,12 @@ fn run(
     let mut generation = 0;
     let mut transport = match Transport::new(host.as_ref(), 640, 480, 0, gpu) {
         Ok(transport) => transport,
-        Err(error) if choice == BackendPreference::WindowsSharedAuto => {
+        Err(error)
+            if matches!(
+                choice,
+                BackendPreference::Auto | BackendPreference::WindowsSharedAuto
+            ) =>
+        {
             eprintln!("shared allocation unavailable: {error}; selecting readback");
             shared.0.lock().unwrap().status.fallback_reason = Some(error.to_string());
             gpu = false;
@@ -327,7 +360,11 @@ fn run(
     {
         let mut state = shared.0.lock().unwrap();
         state.status.active = Some(if gpu {
-            PresentationBackend::WindowsShared
+            if host.renderer().device.adapter_info().backend == wgpu::Backend::Vulkan {
+                PresentationBackend::VulkanShared
+            } else {
+                PresentationBackend::WindowsShared
+            }
         } else {
             PresentationBackend::Readback
         });
@@ -342,7 +379,7 @@ fn run(
     let mut last_layout = None;
     let mut camera_anchors = [[0.6, 0.35, 4., 0., 0., 0.]; 4];
     #[cfg(target_os = "windows")]
-    let mut retired_shared: Vec<crate::windows::SharedRing> = Vec::new();
+    let mut retired_shared: Vec<crate::windows::PresentationRing> = Vec::new();
     let trace_gpu = std::env::var_os("GPUI_NIGHTSHADE_TRACE_GPU").is_some();
     let mut published_frames = 0u64;
     let started = std::time::Instant::now();
@@ -582,8 +619,9 @@ fn run(
                     );
                 }
                 state.diagnostics = format!(
-                    "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
+                    "{} {:?} -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
                     host.renderer().gpu_profile.name,
+                    host.renderer().gpu_profile.backend,
                     frame.width,
                     frame.height,
                     id.sequence
@@ -792,7 +830,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     #[ignore = "requires a working native GPU adapter"]
-    fn auto_uses_vulkan_readback_without_attempting_dx12() {
+    fn auto_uses_vulkan_sharing_without_attempting_dx12() {
         let mut worker = Worker::new(
             BackendPreference::Auto,
             Arc::new(|backends, w, h| {
@@ -806,11 +844,11 @@ mod tests {
         );
         wait_for(&worker, |s| s.image.is_some());
         let status = worker.presentation_status();
-        assert_eq!(status.active, Some(PresentationBackend::Readback));
+        assert_eq!(status.active, Some(PresentationBackend::VulkanShared));
         assert_eq!(status.graphics_backend, Some(wgpu::Backend::Vulkan));
         assert!(status.error.is_none());
         assert!(status.fallback_reason.is_none());
-        assert!(worker.take().0.unwrap().image.as_bytes(0).is_some());
+        assert!(worker.take().0.unwrap().image.as_bytes(0).is_none());
         worker.shutdown().unwrap().join().unwrap();
     }
     #[cfg(target_os = "windows")]
@@ -847,37 +885,46 @@ mod tests {
     #[test]
     #[ignore = "requires D3D12 sharing on a native Windows GPU"]
     fn importer_failure_replaces_gpu_mailbox_with_real_readback() {
-        let mut worker = Worker::new(
+        for preference in [
             BackendPreference::WindowsSharedAuto,
-            Arc::new(|backends, w, h| {
-                Ok(Box::new(ContinuousHost(pollster::block_on(
-                    SceneHost::cube_with_backends(w, h, backends),
-                )?)))
-            }),
-        );
-        wait_for(&worker, |s| s.image.is_some());
-        assert_eq!(
-            worker.presentation_status().active,
-            Some(PresentationBackend::WindowsShared)
-        );
-        let old = worker.take().0.unwrap();
-        assert!(old.image.as_bytes(0).is_none());
-        worker.paint_failed("importer deliberately unsupported".into());
-        wait_for(&worker, |s| {
-            s.status.active == Some(PresentationBackend::Readback) && s.image.is_some()
-        });
-        let frame = worker.take().0.unwrap();
-        assert!(
-            frame.image.as_bytes(0).is_some(),
-            "fallback must contain actual CPU pixels"
-        );
-        let status = worker.presentation_status();
-        assert!(status.error.is_none());
-        assert_eq!(
-            status.fallback_reason.as_deref(),
-            Some("importer deliberately unsupported")
-        );
-        drop(old);
-        worker.shutdown().unwrap().join().unwrap();
+            BackendPreference::Auto,
+        ] {
+            let mut worker = Worker::new(
+                preference,
+                Arc::new(|backends, w, h| {
+                    Ok(Box::new(ContinuousHost(pollster::block_on(
+                        SceneHost::cube_with_backends(w, h, backends),
+                    )?)))
+                }),
+            );
+            wait_for(&worker, |s| s.image.is_some());
+            assert_eq!(
+                worker.presentation_status().active,
+                Some(if preference == BackendPreference::Auto {
+                    PresentationBackend::VulkanShared
+                } else {
+                    PresentationBackend::WindowsShared
+                })
+            );
+            let old = worker.take().0.unwrap();
+            assert!(old.image.as_bytes(0).is_none());
+            worker.paint_failed("importer deliberately unsupported".into());
+            wait_for(&worker, |s| {
+                s.status.active == Some(PresentationBackend::Readback) && s.image.is_some()
+            });
+            let frame = worker.take().0.unwrap();
+            assert!(
+                frame.image.as_bytes(0).is_some(),
+                "fallback must contain actual CPU pixels"
+            );
+            let status = worker.presentation_status();
+            assert!(status.error.is_none());
+            assert_eq!(
+                status.fallback_reason.as_deref(),
+                Some("importer deliberately unsupported")
+            );
+            drop(old);
+            worker.shutdown().unwrap().join().unwrap();
+        }
     }
 }

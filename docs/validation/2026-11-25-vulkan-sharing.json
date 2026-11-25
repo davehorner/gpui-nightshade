@@ -1,0 +1,29 @@
+{
+  "presentsSubmitted": 900,
+  "log": "target/shared-validation/20261125-134052/stderr.log",
+  "peakProcessWorkingSetBytes": 516878336,
+  "backend": "vulkan-shared",
+  "resolution": "see stderr progress",
+  "cpuReadbackFallback": false,
+  "animationClips": 3,
+  "suspensions": 4,
+  "status": "passed",
+  "resumptions": 4,
+  "cameraViews": 4,
+  "resizeGenerations": 28,
+  "lifecycleStress": true,
+  "staticScene": false,
+  "publishedFrames": 600,
+  "date": "2026-11-25",
+  "adapter": "NVIDIA GeForce RTX 4080",
+  "driver": "617.42",
+  "native_pixel_comparison": {
+    "result": "passed",
+    "frames": 6,
+    "reused_slots": true,
+    "comparison": "byte-exact Vulkan source vs D3D11 imported shared image"
+  },
+  "worker_gpu_regressions": "10 passed, including Vulkan/DX12 import-failure fallback and lifetime checks",
+  "submission": "wgpu-owned HAL command buffer, normal Queue.submit and completion callback",
+  "pixel_transport": "one GPU copy, no CPU readback"
+}

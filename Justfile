@@ -35,10 +35,10 @@ headless:
 cube backend="auto":
     cargo run --locked -p gpui-nightshade-viewer -- --cube --presentation={{backend}}
 
-viewer backend="readback":
+viewer backend="auto":
     cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}}
 
-gltf model backend="readback":
+gltf model backend="auto":
     cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}} --model="{{model}}"
 
 multi-viewport backend="auto":

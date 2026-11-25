@@ -1,10 +1,19 @@
 # Windows shared-GPU validation
 
+## Vulkan sharing: current validation
+
+The default Windows path now prefers Vulkan GPU sharing; `--presentation=vulkan-shared` requires it and `readback` forces the CPU reference path. Vulkan performs one GPU copy into imported shared memory and GPUI uses its existing D3D11 compositor. No CPU pixel mapping or upload is used by this transport.
+
+On the tested RTX 4080, the final wgpu-managed submission implementation passed a forced-sharing four-camera compositor run: 600 published GPU frames, 900 Present submissions, 28 resize generations, four suspensions/restorations, and animated Fox model replacement. Peak process working set was 516,878,336 bytes. The native pixel regression matches six changing/reused-slot images byte-for-byte against the Vulkan source and checks lease/consumer gating. Both Vulkan and DX12 worker import-failure regressions produce real readback pixels. Workspace tests and strict Clippy pass.
+
+See [Vulkan sharing architecture and commands](vulkan-sharing.md) and the [retained validation report](validation/2026-11-25-vulkan-sharing.json). This adds correctness/lifecycle evidence on one adapter, not a new end-to-end FPS benchmark. The DX12 investigation and earlier results below remain relevant to the shared GPUI importer and explicit DX12 path.
+
+
 Test machine: Windows, NVIDIA GeForce RTX 4080, pinned Rust 1.100.0 and debug builds. This is correctness investigation, not a release performance benchmark.
 
 ## Current result: imported-resource retirement
 
-The visible full viewer now passes fresh forced-shared runs on this RTX 4080 after retaining evicted D3D11 imports until their consumer fence completes. The editor and demos now default to Vulkan/readback; broader adapters, visual automation and device recreation remain unverified. The investigation history and temporary sampling probes are preserved in commit `7e21fed`; those probes have been removed from the active code.
+The visible full viewer now passes fresh forced-shared runs on this RTX 4080 after retaining evicted D3D11 imports until their consumer fence completes. The editor and demos now prefer Vulkan GPU sharing with readback fallback; broader adapters, visual automation and device recreation remain unverified. The investigation history and temporary sampling probes are preserved in commit `7e21fed`; those probes have been removed from the active code.
 
 The atlas previously dropped its imported D3D11 texture, shader view and synchronization owner as soon as the image key was evicted. The producer checked consumer fences before reuse, but that did not explicitly retain the consumer-side import objects. Removed external entries now leave the drawable atlas immediately and enter a retirement queue. Their native objects and producer frame leases stay alive until consumer completion; the device-removal sentinel cannot release them. Collection runs before each GPUI render/import and from the viewport polling task even when no draw is scheduled. Retained leases apply backpressure through the existing three-slot producer ring and bounded retired generations. There is no CPU wait on the UI thread and no additional pixel copy.
 
