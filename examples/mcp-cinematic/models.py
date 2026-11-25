@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 ASSETS = Path(__file__).resolve().parent / "assets"
 BASE = "https://raw.githubusercontent.com/KhronosGroup/"
 CATALOG = {
+    "cube": [("AnimatedMorphCube", BASE + "glTF-Sample-Assets/main/Models/AnimatedMorphCube/glTF-Binary/AnimatedMorphCube.glb")],
+    "spring": [],
     "morph": [
         ("AnimatedMorphCube", BASE + "glTF-Sample-Assets/main/Models/AnimatedMorphCube/glTF-Binary/AnimatedMorphCube.glb"),
         ("AnimatedMorphSphere", BASE + "glTF-Sample-Models/master/2.0/AnimatedMorphSphere/glTF-Binary/AnimatedMorphSphere.glb"),
@@ -26,6 +28,8 @@ CATALOG = {
     ],
 }
 LOCAL = {
+    "cube": [ASSETS / "AnimatedMorphCube.glb"],
+    "spring": [ASSETS / "CoiledSpring.glb"],
     "morph": [ASSETS / "AnimatedMorphCube.glb"],
     "skeleton": [ROOT / "upstream/nightshade/assets/gltf" / name
                  for name in ("fox.glb", "x_bot.glb", "y_bot_locomotion.glb")],
@@ -33,7 +37,12 @@ LOCAL = {
 MAX_BYTES = 32 * 1024 * 1024
 
 
+def capability(role):
+    return {"cube": "morph", "spring": "skeleton"}.get(role, role)
+
+
 def parse_glb(data, role):
+    role = capability(role)
     if len(data) < 20 or struct.unpack_from("<III", data) != (0x46546C67, 2, len(data)):
         raise ValueError("not a complete glTF 2 GLB")
     chunks, offset = {}, 12
@@ -111,7 +120,14 @@ def select_models(seed, cache, timeout=8, fetch=download):
     # for the same available pools; network availability can change those pools.
     pools = {role: resolve_pool(role, cache, timeout, fetch) for role in CATALOG}
     rng = random.Random(seed)
-    return [(role, rng.choice(pool)) for role, pool in pools.items()], rng
+    chosen, names = [], set()
+    for role, pool in pools.items():
+        asset = pool[0] if role in ("cube", "spring") else rng.choice(pool)
+        key = asset["name"].casefold()
+        if key not in names:
+            chosen.append((role, asset))
+            names.add(key)
+    return chosen, rng
 
 
 def model_bounds(doc):
@@ -182,7 +198,8 @@ def orbit_pose(t, center, size):
 def show_model(client, asset, role, rng, args):
     path = args.scene.resolve().with_name(f"showcase-{role}.gltf")
     marker, center, size = prepare_scene(asset, role, path)
-    print(f"{role}: RNG chose {asset['name']} ({asset['source']}); {asset['path']}", flush=True)
+    choice = "Included required" if role in ("cube", "spring") else "RNG chose"
+    print(f"{role}: {choice} {asset['name']} ({asset['source']}); {asset['path']}", flush=True)
     client.call("load_file", path=str(path))
     deadline = time.monotonic() + 30
     while True:
@@ -199,7 +216,7 @@ def show_model(client, asset, role, rng, args):
     print(f"  RNG clip: {clip['name']} (index {clip['index']}); "
           f"skeleton joints: {sum(len(s['joints']) for s in parse_glb(asset['path'].read_bytes(), role)[0].get('skins', []))}", flush=True)
     client.call("select_entity")
-    client.call("set_render", skeleton=role == "skeleton", turntable=False, grid=False,
+    client.call("set_render", skeleton=capability(role) == "skeleton", turntable=False, grid=False,
                 atmosphere=1, sky=True, sun_intensity=4, exposure=0.9, shading=0, pbr_debug=0)
     client.call("set_transform", entity=camera, **orbit_pose(0, center, size))
     client.call("set_active_camera", entity=camera)
@@ -207,7 +224,7 @@ def show_model(client, asset, role, rng, args):
     client.call("play_clip", index=clip["index"], blend_time=0)
     wait_for_animation(client, lambda a: a["playing"] and a["time"] > 0)
     morph = None
-    if role == "morph":
+    if capability(role) == "morph":
         for node in nodes:
             if node["kind"] == "mesh":
                 try:

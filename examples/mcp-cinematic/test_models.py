@@ -20,8 +20,10 @@ class ModelSelectionTests(unittest.TestCase):
             return self.morph if "Morph" in url else self.skinned
         with tempfile.TemporaryDirectory() as directory:
             choices, _ = models.select_models(42, Path(directory), fetch=fetch)
-            self.assertEqual(len(calls), 4)
-            self.assertTrue(all(asset["source"] == "remote" for _, asset in choices))
+            self.assertEqual(len(calls), 5)
+            self.assertEqual([(r, a["name"]) for r, a in choices[:2]],
+                             [("cube", "AnimatedMorphCube"), ("spring", "CoiledSpring")])
+            self.assertTrue(all(asset["source"] == "remote" for role, asset in choices if role != "spring"))
             again, _ = models.select_models(42, Path(directory), fetch=fetch)
             self.assertEqual([(r, a["name"]) for r, a in choices], [(r, a["name"]) for r, a in again])
             with patch.object(models.random, "Random", wraps=models.random.Random) as rng:
@@ -35,7 +37,7 @@ class ModelSelectionTests(unittest.TestCase):
             raise OSError("offline test")
         with tempfile.TemporaryDirectory() as directory:
             choices, _ = models.select_models(7, Path(directory), fetch=failure)
-            self.assertEqual({role for role, _ in choices}, {"morph", "skeleton"})
+            self.assertEqual({role for role, _ in choices}, {"cube", "spring", "skeleton"})
             for role, asset in choices:
                 self.assertEqual(asset["source"], "local fallback")
                 models.parse_glb(asset["path"].read_bytes(), role)
@@ -59,6 +61,12 @@ class ModelSelectionTests(unittest.TestCase):
             self.assertEqual(prepared["nodes"][-1]["name"], marker + " camera")
             self.assertGreater(size, 0)
             self.assertEqual(len(center), 3)
+
+    def test_required_coil_has_a_real_skin_and_two_native_clips(self):
+        doc, binary = models.parse_glb((models.ASSETS / "CoiledSpring.glb").read_bytes(), "spring")
+        self.assertEqual(len(doc["skins"][0]["joints"]), 13)
+        self.assertEqual([a["name"] for a in doc["animations"]], ["Spring compression", "Spring bending"])
+        self.assertGreater(len(binary), 10000)
 
     def test_rejects_static_wrong_role_and_truncated_assets(self):
         with self.assertRaises(ValueError):
