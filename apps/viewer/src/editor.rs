@@ -45,8 +45,13 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.on_release(|view, cx| view.thumbnails.release(cx))
-            .detach();
+        cx.on_release(|view, cx| {
+            if let Err(error) = view.dock.save(cx) {
+                eprintln!("Could not save editor layout: {error}");
+            }
+            view.thumbnails.release(cx);
+        })
+        .detach();
         let labels = [
             "Name",
             "x, y, z",
@@ -851,6 +856,18 @@ impl Render for Editor {
                     .items_center()
                     .flex_wrap()
                     .child("NIGHTSHADE")
+                    .child(
+                        Button::new("save-layout")
+                            .label("Save layout")
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.message = match view.dock.save(cx) {
+                                    Ok(true) => "Layout saved".into(),
+                                    Ok(false) => "Layout persistence is disabled".into(),
+                                    Err(error) => format!("Could not save layout: {error}"),
+                                };
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Button::new("reset-layout")
                             .label("Reset layout")

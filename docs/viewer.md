@@ -24,7 +24,11 @@ Scene, Viewport, Inspector and Animation are retained native dock panels. Drag a
 
 Moving, tabbing and resetting retain the same viewport entity, worker, scene, selection and input fields. Panels observe editor changes through weak references so tabbed inspectors continue receiving current snapshots without retaining the editor after window closure. Core panels cannot be closed. The asset browser stays above the docking area.
 
-Live Windows checks covered inspector-to-viewport tab grouping, switching back to the rendered scene, splitter resizing, panel zoom and layout reset. A cube created while the viewport was hidden appeared on return, and MCP confirmed identical entity/selection/transform before and after reset. Layouts are currently session-only; saving/restoring layouts across launches and suspending hidden viewport rendering remain unfinished.
+Live Windows checks covered inspector-to-viewport tab grouping, switching back to the rendered scene, splitter resizing, panel zoom and layout reset. A cube created while the viewport was hidden appeared on return, and MCP confirmed identical entity/selection/transform before and after reset. Suspending hidden viewport rendering remains unfinished.
+
+Panel arrangement, split sizes and active tabs restore across launches. **Save layout** writes immediately; normal window close saves automatically. On Windows the default file is `%APPDATA%/gpui-nightshade/layout.json`; other platforms use `$XDG_CONFIG_HOME/gpui-nightshade/layout.json` or `$HOME/.config/gpui-nightshade/layout.json`. `GPUI_NIGHTSHADE_LAYOUT` overrides the file path; an empty value disables persistence. Reset layout affects the current arrangement, which is persisted by Save layout or normal close. Forced process termination does not save unsaved changes. Panel zoom is transient.
+
+The versioned layout must contain each editor panel exactly once. File size, nesting, tab indices and split/dock geometry are bounded and validated before loading. Corrupt, incompatible or incomplete layouts fall back to the default arrangement with a stderr diagnostic. Saving replaces the file through a temporary sibling, and errors from explicit saves appear in the status bar. Tests cover replacement, corruption, oversize files, invalid geometry and panel identities. Native Windows checks verified manual save, relaunch restoration with the active tab, automatic save on normal close, and corrupt-file fallback. Scene/model state is not stored in the layout.
 
 ## Rendering and output
 
@@ -50,4 +54,4 @@ The original agent plugin runs on the same worker-owned world used by the editor
 
 ## Remaining work
 
-Persistent dock layouts, local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, broader render-mode validation, conversion UI, asset drag/drop and broader gizmo validation remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.
+Local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, broader render-mode validation, conversion UI, asset drag/drop and broader gizmo validation remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.

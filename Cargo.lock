@@ -3003,6 +3003,7 @@ dependencies = [
  "gpui-nightshade-components",
  "image",
  "nightshade-viewer-core",
+ "serde_json",
 ]
 
 [[package]]

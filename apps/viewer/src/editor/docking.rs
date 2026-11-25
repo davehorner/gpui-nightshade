@@ -1,6 +1,8 @@
 use super::*;
+mod persistence;
 use gpui_kit::component::dock::{
     BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelEvent, panel_handle,
+    register_panel,
 };
 
 #[derive(Clone, Copy)]
@@ -94,6 +96,7 @@ impl Render for EditorPanel {
 pub(super) struct EditorDock {
     pub area: Entity<DockArea>,
     panels: [Entity<EditorPanel>; 4],
+    path: Option<std::path::PathBuf>,
 }
 
 impl EditorDock {
@@ -115,9 +118,43 @@ impl EditorDock {
                 }),
             })
         });
-        let dock = Self { area, panels };
+        for panel in &panels {
+            let name = panel.read(cx).kind.name();
+            let panel = panel.downgrade();
+            register_panel(cx, name, move |_, _, _| {
+                panel_handle(panel.upgrade().expect("registered editor panel is alive"))
+            });
+        }
+        let dock = Self {
+            area,
+            panels,
+            path: persistence::layout_path(),
+        };
         dock.reset(window, cx);
+        if let Some(path) = &dock.path {
+            match persistence::read(path) {
+                Ok(Some(state)) => {
+                    if let Err(error) = dock
+                        .area
+                        .update(cx, |area, cx| area.load(state, window, cx))
+                    {
+                        eprintln!("Could not restore editor layout: {error}");
+                        dock.reset(window, cx);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("Ignored saved editor layout: {error}"),
+            }
+        }
         dock
+    }
+
+    pub fn save(&self, cx: &App) -> Result<bool, String> {
+        if let Some(path) = &self.path {
+            persistence::write(path, &self.area.read(cx).dump(cx))?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub fn reset(&self, window: &mut Window, cx: &mut Context<Editor>) {
