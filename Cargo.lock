@@ -2998,8 +2998,10 @@ dependencies = [
 name = "gpui-nightshade-viewer"
 version = "0.1.0"
 dependencies = [
+ "ehttp",
  "gpui-nightshade",
  "gpui-nightshade-components",
+ "image",
  "nightshade-viewer-core",
 ]
 

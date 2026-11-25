@@ -1,5 +1,5 @@
 *.rs text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
-*.patch text eol=lf
+*.patch text eol=lf whitespace=-blank-at-eol
 *.ps1 text eol=lf

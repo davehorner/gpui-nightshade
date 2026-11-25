@@ -10,6 +10,14 @@ Point/spot lights can be created from the toolbar. Light inspectors expose RGB, 
 
 Playback controls include clip selection, play/pause, stop, seek, positive speed and looping. Advanced animation layers, morph/skeleton controls and blend settings remain to be built. Undo/Redo buttons reflect trunk history availability; creation is not recorded by trunk's current history implementation. Core regression tests verify transform, light and camera edit undo.
 
+## Asset browser
+
+Open **Assets** or press Ctrl+B. Local library, Khronos, Polyhaven models and Polyhaven skies use trunk's catalog/library queries and loading actions. Search applies on Enter; changing tabs clears the search. Results are paged at sixty entries, with Previous/Next and explicit loading/failure states. Add folder/files uses trunk's native dialogs. Polyhaven tabs expose 1K/2K/4K/8K selection.
+
+Click a card to load its model or sky into the current scene. Remote thumbnails use native HTTP and image decoding off the UI thread. Four requests may run at once; decoded images are at most 128×96, oversized source images are rejected, and leaving a page releases its GPUI image handles. Local files currently have text cards; local preview generation remains unfinished. Failed previews can be retried by leaving and reopening the page.
+
+Live Windows validation displayed Khronos thumbnails and loaded the textured Avocado model by clicking its card. Core tests cover case-insensitive search, page bounds, catalog failures and owned snapshots. Polyhaven model/sky downloads and native library add-dialog flows have not yet received end-to-end automation coverage.
+
 ## Native MCP
 
 The original agent plugin runs on the same worker-owned world used by the editor. Pass `--agent-port=PORT` to select its localhost port or `--no-agent` to disable it. The endpoint accepts HTTP POST JSON-RPC (`initialize`, `tools/list`, `tools/call`) and retains trunk's tool names and schemas. No browser or second scene is involved.
@@ -18,4 +26,4 @@ The original agent plugin runs on the same worker-owned world used by the editor
 
 ## Remaining work
 
-Docking, asset-browser/search/thumbnails, complete PBR controls, morph/skeleton and animation layers, atmosphere, export/screenshot UI, conversion UI, drag/drop and gizmo pointer routing remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.
+Docking, local preview generation, complete PBR controls, morph/skeleton and animation layers, atmosphere, export/screenshot UI, conversion UI, drag/drop and gizmo pointer routing remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.

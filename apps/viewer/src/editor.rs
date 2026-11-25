@@ -12,8 +12,9 @@ use gpui_nightshade_components::{
     gpui_kit::{self, *},
 };
 use nightshade_viewer_core::{
-    CameraField, GizmoMode, LightField, LightKind, MaterialField, PrimitiveKind, TextureSlot,
-    ViewerAction as Action, ViewerArguments, ViewerConnection, ViewerSnapshot,
+    BrowserItem, BrowserSnapshot, BrowserStatus, BrowserTab, CameraField, GizmoMode, LightField,
+    LightKind, MaterialField, PrimitiveKind, TextureSlot, ViewerAction as Action, ViewerArguments,
+    ViewerConnection, ViewerSnapshot,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -27,6 +28,7 @@ struct Editor {
     message: String,
     overlay: bool,
     field_selection: Option<(u32, u32)>,
+    thumbnails: crate::thumbnails::Thumbnails,
 }
 impl Editor {
     fn new(
@@ -35,6 +37,8 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|view, cx| view.thumbnails.release(cx))
+            .detach();
         let labels = [
             "Name",
             "x, y, z",
@@ -58,6 +62,7 @@ impl Editor {
             "Near",
             "Far (0 = infinite)",
             "Playback speed",
+            "Search assets — Enter to apply",
         ];
         let fields: Vec<_> = labels
             .iter()
@@ -81,6 +86,9 @@ impl Editor {
                     .await;
                 if view
                     .update(cx, |view, cx| {
+                        if view.thumbnails.has_update() {
+                            cx.notify();
+                        }
                         if let Some(snapshot) = view.connection.snapshot()
                             && view
                                 .snapshot
@@ -107,6 +115,7 @@ impl Editor {
             message: String::new(),
             overlay: false,
             field_selection: None,
+            thumbnails: Default::default(),
         }
     }
     fn send(&mut self, action: Action, cx: &mut Context<Self>) {
@@ -200,6 +209,7 @@ impl Editor {
                 })
                 .map(|v| Action::SetCameraField(CameraField::Far(v))),
             21 => scalar().filter(|v| *v > 0.).map(Action::SetAnimationSpeed),
+            22 => Some(Action::SetBrowserSearch(value.clone())),
             _ => None,
         };
         if let Some(action) = action {
@@ -238,6 +248,10 @@ impl Editor {
             format!("{:.3}", camera.map_or(0.1, |v| v.near)),
             format!("{:.3}", camera.map_or(0., |v| v.far)),
             format!("{:.3}", snapshot.animation.speed),
+            snapshot
+                .browser
+                .as_ref()
+                .map_or(String::new(), |b| b.query.clone()),
         ];
         for (field, value) in self.fields.iter().zip(values) {
             if !field.focus_handle(cx).is_focused(window)
@@ -262,17 +276,198 @@ impl Editor {
         Button::new(id)
             .disabled(disabled)
             .label(label)
-            .on_click(cx.listener(move |view, _, _, cx| view.send(action.clone(), cx)))
+            .on_click(cx.listener(move |view, _, window, cx| {
+                window.focus(&view.viewport.focus_handle(cx), cx);
+                view.send(action.clone(), cx);
+            }))
+    }
+    fn browser_panel(&self, browser: &BrowserSnapshot, cx: &mut Context<Self>) -> AnyElement {
+        let mut tabs = div().flex().items_center().gap_2().flex_wrap();
+        for (index, (tab, label)) in [
+            (BrowserTab::Library, "Local library"),
+            (BrowserTab::Khronos, "Khronos"),
+            (BrowserTab::Models, "Polyhaven models"),
+            (BrowserTab::Skies, "Polyhaven skies"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            tabs = tabs.child(
+                Button::new(("browser-tab", index))
+                    .label(if browser.tab == tab {
+                        format!("• {label}")
+                    } else {
+                        label.into()
+                    })
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        window.focus(&view.viewport.focus_handle(cx), cx);
+                        view.send(Action::SetBrowserTab(tab), cx);
+                    })),
+            );
+        }
+        tabs = tabs
+            .child(Input::new(&self.fields[22]).w(px(220.)))
+            .child(self.action_button("refresh-assets", "Refresh", Action::RefreshLibrary, cx));
+        if browser.tab == BrowserTab::Library {
+            tabs = tabs
+                .child(self.action_button("add-folder", "Add folder", Action::AddLibraryFolder, cx))
+                .child(self.action_button("add-files", "Add files", Action::AddLibraryFiles, cx));
+        }
+        if matches!(browser.tab, BrowserTab::Models | BrowserTab::Skies) {
+            for (index, resolution) in [1, 2, 4, 8].into_iter().enumerate() {
+                tabs = tabs.child(
+                    Button::new(("asset-resolution", index))
+                        .label(format!(
+                            "{}{}K",
+                            if browser.resolution == resolution {
+                                "• "
+                            } else {
+                                ""
+                            },
+                            resolution
+                        ))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.send(Action::SetResolution(resolution), cx)
+                        })),
+                );
+            }
+        }
+        tabs = tabs.child(self.action_button("close-assets", "Close", Action::CloseBrowser, cx));
+        let mut entries = div()
+            .id("asset-entries")
+            .flex()
+            .flex_wrap()
+            .items_start()
+            .gap_2()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll();
+        for (index, entry) in browser.entries.iter().enumerate() {
+            let action = match &entry.item {
+                BrowserItem::File(path) => Action::OpenLibraryFile(path.clone()),
+                BrowserItem::Khronos(name) => Action::LoadKhronos(name.clone()),
+                BrowserItem::Model(slug) => Action::LoadPolyhavenModel(slug.clone()),
+                BrowserItem::Sky(slug) => Action::LoadPolyhavenSky(slug.clone()),
+            };
+            let mut card = div()
+                .id(("asset-entry", index))
+                .w(px(180.))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .bg(rgb(0x303948))
+                .cursor_pointer();
+            let mut preview = div()
+                .w(px(128.))
+                .h(px(96.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgb(0x202630));
+            if let Some(image) = self.thumbnails.image(&entry.key) {
+                preview = preview.child(
+                    img(image)
+                        .w(px(128.))
+                        .h(px(96.))
+                        .object_fit(ObjectFit::Contain),
+                );
+            } else {
+                preview = preview.child(if !entry.key.starts_with("http") {
+                    "Local file"
+                } else if self.thumbnails.is_finished(&entry.key) {
+                    "Preview unavailable"
+                } else {
+                    "Loading preview…"
+                });
+            }
+            card = card.child(preview);
+            entries = entries.child(card.child(entry.label.clone()).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    window.focus(&view.viewport.focus_handle(cx), cx);
+                    view.send(action.clone(), cx);
+                }),
+            ));
+        }
+        if browser.entries.is_empty() {
+            entries = entries.child(match browser.status {
+                BrowserStatus::Loading => "Loading assets…",
+                BrowserStatus::Failed => "Catalog request failed. Use Refresh to retry.",
+                BrowserStatus::Idle => "Catalog has not started.",
+                BrowserStatus::Ready => {
+                    if browser.tab == BrowserTab::Library && browser.query.is_empty() {
+                        "Add model files or a folder to the local library."
+                    } else {
+                        "No assets match this search."
+                    }
+                }
+            });
+        }
+        let previous = browser.page.saturating_sub(1);
+        let next = browser.page + 1;
+        div()
+            .h(px(260.))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .bg(rgb(0x252b35))
+            .child(tabs)
+            .child(entries)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("assets-prev")
+                            .label("Previous")
+                            .disabled(browser.page == 0)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.send(Action::SetBrowserPage(previous), cx)
+                            })),
+                    )
+                    .child(format!(
+                        "Page {} / {} · {:?}",
+                        browser.page + 1,
+                        browser.pages,
+                        browser.status
+                    ))
+                    .child(
+                        Button::new("assets-next")
+                            .label("Next")
+                            .disabled(next >= browser.pages)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.send(Action::SetBrowserPage(next), cx)
+                            })),
+                    ),
+            )
+            .into_any_element()
     }
 }
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
+        self.thumbnails.update(
+            snapshot
+                .as_ref()
+                .and_then(|s| s.browser.as_ref())
+                .into_iter()
+                .flat_map(|b| b.entries.iter().map(|e| e.key.clone())),
+            window,
+        );
         if let Some(snapshot) = &snapshot {
             let selected = snapshot.selection.selected.map(|e| (e.id, e.generation));
             if selected != self.field_selection {
                 if self.fields.iter().enumerate().any(|(i, field)| {
-                    i != 6 && i != 7 && i != 21 && field.focus_handle(cx).is_focused(window)
+                    i != 6
+                        && i != 7
+                        && i != 21
+                        && i != 22
+                        && field.focus_handle(cx).is_focused(window)
                 }) {
                     window.focus(&self.viewport.focus_handle(cx), cx);
                 }
@@ -568,6 +763,7 @@ impl Render for Editor {
                 let modifiers = event.keystroke.modifiers;
                 let action = match (key, modifiers.control || modifiers.platform) {
                     ("o", true) => Some(Action::ImportFile),
+                    ("b", true) => Some(Action::OpenBrowser(BrowserTab::Library)),
                     ("z", true) if modifiers.shift => Some(Action::Redo),
                     ("z", true) => Some(Action::Undo),
                     ("y", true) => Some(Action::Redo),
@@ -588,6 +784,12 @@ impl Render for Editor {
                     .flex_wrap()
                     .child("NIGHTSHADE")
                     .child(self.action_button("open", "Open model", Action::ImportFile, cx))
+                    .child(self.action_button(
+                        "assets",
+                        "Assets",
+                        Action::OpenBrowser(BrowserTab::Library),
+                        cx,
+                    ))
                     .child(self.action_button(
                         "cube",
                         "Add cube",
@@ -635,6 +837,10 @@ impl Render for Editor {
                                 cx.notify();
                             })),
                     ),
+            )
+            .when_some(
+                snapshot.as_ref().and_then(|s| s.browser.as_ref()),
+                |root, browser| root.child(self.browser_panel(browser, cx)),
             )
             .child(
                 div()
@@ -703,22 +909,31 @@ pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-                let connection = ViewerConnection::default();
-                let worker_connection = connection.clone();
-                let factory: gpui_nightshade_components::SceneFactory =
-                    Arc::new(move |backends, width, height| {
-                        nightshade_viewer_core::open(
-                            arguments.clone(),
-                            backends,
-                            width,
-                            height,
-                            worker_connection.clone(),
-                        )
-                    });
-                let viewport = cx.new(|cx| NightshadeViewport::from_factory(backend, factory, cx));
-                cx.new(|cx| Editor::new(viewport, connection, window, cx))
-            })
+            let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    let connection = ViewerConnection::default();
+                    let worker_connection = connection.clone();
+                    let factory: gpui_nightshade_components::SceneFactory =
+                        Arc::new(move |backends, width, height| {
+                            nightshade_viewer_core::open(
+                                arguments.clone(),
+                                backends,
+                                width,
+                                height,
+                                worker_connection.clone(),
+                            )
+                        });
+                    let viewport =
+                        cx.new(|cx| NightshadeViewport::from_factory(backend, factory, cx));
+                    cx.new(|cx| Editor::new(viewport, connection, window, cx))
+                },
+            )
             .expect("open viewer");
             cx.activate(true);
         });

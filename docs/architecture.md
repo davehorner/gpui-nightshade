@@ -23,3 +23,5 @@ Canvas prepaint reports logical bounds and scale. Physical dimensions use rounde
 Multiple viewports currently use independent worlds/devices. A shared ECS with multiple camera producers is a separate lifecycle integration and is not claimed here.
 
 The GPUI editor sends existing `ViewerAction` values through a 256-entry bridge to the core queue (capacity 4096). It reads an owned latest snapshot behind an Arc, so no ECS references cross threads. Camera input applies deltas to the current orbit targets to preserve core framing and agent changes.
+
+Asset browsing reuses trunk page queries through owned snapshots and a search action in the original dispatcher. The GPUI thumbnail cache requests only the current page, caps HTTP work at four requests, decodes off-thread, rejects oversized inputs and explicitly evicts images on page changes/entity release. Local preview generation is not delegated to a hidden native viewer.

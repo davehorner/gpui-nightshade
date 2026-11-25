@@ -1,5 +1,6 @@
 mod demo;
 mod editor;
+mod thumbnails;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let demo = args

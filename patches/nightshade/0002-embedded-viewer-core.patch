@@ -10,6 +10,18 @@ index 96196fe..0afd255 100644
   "nightshade-cli",
   "nightshade-log",
   "nightshade-platform",
+diff --git a/apps/viewer/src/data.rs b/apps/viewer/src/data.rs
+index 32ffa9e..7c2d83e 100644
+--- a/apps/viewer/src/data.rs
++++ b/apps/viewer/src/data.rs
+@@ -77,6 +77,7 @@ pub enum ViewerAction {
+     CloseBrowser,
+     SetBrowserTab(BrowserTab),
+     SetBrowserPage(usize),
++    SetBrowserSearch(String),
+     SetResolution(u32),
+     RandomModel,
+     RandomSky,
 diff --git a/apps/viewer/src/lib.rs b/apps/viewer/src/lib.rs
 index a79ef92..7f1eeed 100644
 --- a/apps/viewer/src/lib.rs
@@ -295,7 +307,7 @@ index 39e3a74..21e4e67 100644
  fn compose_agent(app: &mut App) {
      use crate::commands::agent::start_agent;
 diff --git a/apps/viewer/src/resources.rs b/apps/viewer/src/resources.rs
-index 4068f0f..413be51 100644
+index 4068f0f..555b3e5 100644
 --- a/apps/viewer/src/resources.rs
 +++ b/apps/viewer/src/resources.rs
 @@ -89,6 +89,7 @@ impl Default for Sun {
@@ -306,7 +318,15 @@ index 4068f0f..413be51 100644
  pub struct Selection {
      pub selected: Option<Entity>,
      pub others: Vec<Entity>,
-@@ -609,6 +610,7 @@ pub struct LayerView {
+@@ -422,6 +423,7 @@ impl Default for Browsers {
+     }
+ }
+ 
++#[derive(Clone)]
+ pub struct BrowserEntry {
+     pub label: String,
+     pub key: String,
+@@ -609,6 +611,7 @@ pub struct LayerView {
      pub weight: f32,
  }
  
@@ -314,7 +334,7 @@ index 4068f0f..413be51 100644
  pub struct AnimationView {
      pub clip: Option<usize>,
      pub playing: bool,
-@@ -637,7 +639,7 @@ impl Default for AnimationView {
+@@ -637,7 +640,7 @@ impl Default for AnimationView {
      }
  }
  
@@ -323,7 +343,7 @@ index 4068f0f..413be51 100644
  pub struct ViewerArguments {
      #[arg(
          long,
-@@ -1038,7 +1040,6 @@ nightshade::ecs::resource_bundle! {
+@@ -1038,7 +1041,6 @@ nightshade::ecs::resource_bundle! {
              hierarchy: nightshade::ecs::HierarchyIndex,
              entities: nightshade_scene::resources::entity_registry::EntityRegistry,
              loading: nightshade_gltf::Loading,
@@ -331,11 +351,22 @@ index 4068f0f..413be51 100644
          }
          read {
              arguments: ViewerArguments,
-@@ -1059,3 +1060,4 @@ impl Stage<'_> {
+diff --git a/apps/viewer/src/systems/actions.rs b/apps/viewer/src/systems/actions.rs
+index da34f77..650745c 100644
+--- a/apps/viewer/src/systems/actions.rs
++++ b/apps/viewer/src/systems/actions.rs
+@@ -95,6 +95,11 @@ fn apply_action(
+             viewer.view.browser_dirty = true;
+             viewer.browsers.reset_thumbnails |= changed;
          }
-     }
- }
-+
++        ViewerAction::SetBrowserSearch(query) => {
++            stage.viewer.view.search = query;
++            stage.viewer.view.browser_page = 0;
++            stage.viewer.view.browser_dirty = true;
++        }
+         ViewerAction::SetBrowserPage(page) => {
+             let viewer = &mut *stage.viewer;
+             let last = viewer
 diff --git a/apps/viewer/src/systems/browsers.rs b/apps/viewer/src/systems/browsers.rs
 index 031ad9e..d867b5f 100644
 --- a/apps/viewer/src/systems/browsers.rs
@@ -532,12 +563,13 @@ diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
 new file mode 100644
 --- /dev/null
 +++ b/apps/viewer/src/core.rs
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,487 @@
 +//! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
 +pub use crate::data::*;
 +pub use crate::plugin::ViewerCorePlugin;
 +pub use crate::resources::{
-+    AnimationView, ClipInfo, MaterialView, ModelStats, SceneRow, Selection, ViewerArguments,
++    AnimationView, BrowserEntry, ClipInfo, MaterialView, ModelStats, SceneRow, Selection,
++    ViewerArguments,
 +};
 +use nightshade::prelude::*;
 +
@@ -546,9 +578,68 @@ new file mode 100644
 +    pub pointer_over_ui: bool,
 +}
 +
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum BrowserStatus {
++    Idle,
++    Loading,
++    Ready,
++    Failed,
++}
++#[derive(Clone)]
++pub struct BrowserSnapshot {
++    pub tab: BrowserTab,
++    pub query: String,
++    pub page: usize,
++    pub pages: usize,
++    pub status: BrowserStatus,
++    pub entries: Vec<BrowserEntry>,
++    pub resolution: u32,
++}
++fn browser_snapshot(viewer: &crate::resources::ViewerResources) -> Option<BrowserSnapshot> {
++    use crate::{
++        queries::browsers::{page_count, page_entries},
++        resources::FetchState,
++    };
++    fn status<T>(state: &std::sync::Mutex<FetchState<T>>) -> BrowserStatus {
++        state
++            .lock()
++            .map_or(BrowserStatus::Failed, |state| match &*state {
++                FetchState::Idle => BrowserStatus::Idle,
++                FetchState::Loading => BrowserStatus::Loading,
++                FetchState::Loaded(_) => BrowserStatus::Ready,
++                FetchState::Failed => BrowserStatus::Failed,
++            })
++    }
++    let tab = viewer.view.browser?;
++    let query = viewer.view.search.to_lowercase();
++    let pages = page_count(viewer, tab, &query);
++    let page = viewer.view.browser_page.min(pages - 1);
++    Some(BrowserSnapshot {
++        tab,
++        query: viewer.view.search.clone(),
++        page,
++        pages,
++        resolution: viewer.view.resolution,
++        status: match tab {
++            BrowserTab::Library => {
++                if viewer.library.scanning {
++                    BrowserStatus::Loading
++                } else {
++                    BrowserStatus::Ready
++                }
++            }
++            BrowserTab::Khronos => status(&viewer.browsers.khronos),
++            BrowserTab::Models => status(&viewer.browsers.models),
++            BrowserTab::Skies => status(&viewer.browsers.skies),
++        },
++        entries: page_entries(viewer, tab, &query, page),
++    })
++}
++
 +/// An owned snapshot; no ECS guards, UI entities or mutable resource references escape.
 +#[derive(Clone)]
 +pub struct ViewerSnapshot {
++    pub browser: Option<BrowserSnapshot>,
 +    pub nodes: Vec<SceneRow>,
 +    pub selection: Selection,
 +    pub animation: AnimationView,
@@ -573,12 +664,19 @@ new file mode 100644
 +pub fn snapshot(world: &World) -> ViewerSnapshot {
 +    let viewer = world.res::<crate::resources::ViewerResources>();
 +    ViewerSnapshot {
++        browser: browser_snapshot(viewer),
 +        nodes: viewer.model.rows.clone(),
 +        selection: viewer.selection.clone(),
 +        animation: viewer.animation.clone(),
 +        clips: viewer.model.clips.clone(),
 +        stats: viewer.model.stats.clone(),
-+        loading: viewer.model.pending.is_some(),
++        loading: viewer.model.pending.is_some()
++            || viewer
++                .incoming
++                .loading
++                .lock()
++                .ok()
++                .is_some_and(|loading| loading.is_some()),
 +        grid: viewer.view.grid,
 +        notice: viewer
 +            .incoming
@@ -788,6 +886,75 @@ new file mode 100644
 +        app.world.increment_tick();
 +        app.stages.run(&mut app.world);
 +        assert_eq!(snapshot(&app.world).selection.camera.unwrap(), original);
++    }
++
++    #[test]
++    fn browser_snapshots_filter_clamp_and_own_catalog_entries() {
++        use crate::resources::{FetchState, PolyAsset, ViewerResources};
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        {
++            let viewer = app.world.res_mut::<ViewerResources>();
++            *viewer.browsers.models.lock().unwrap() = FetchState::Loaded(
++                (0..125)
++                    .map(|i| PolyAsset {
++                        slug: format!("asset_{i}"),
++                        name: format!("Model {i:03}"),
++                        thumbnail: String::new(),
++                    })
++                    .collect(),
++            );
++        }
++        submit(
++            &mut app.world,
++            ViewerAction::OpenBrowser(BrowserTab::Models),
++        )
++        .unwrap();
++        submit(&mut app.world, ViewerAction::SetBrowserPage(usize::MAX)).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let page = snapshot(&app.world).browser.unwrap();
++        assert_eq!(page.status, BrowserStatus::Ready);
++        assert_eq!((page.page, page.pages, page.entries.len()), (2, 3, 5));
++        submit(
++            &mut app.world,
++            ViewerAction::SetBrowserSearch("MODEL 001".into()),
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let filtered = snapshot(&app.world).browser.unwrap();
++        assert_eq!(
++            (filtered.page, filtered.pages, filtered.entries.len()),
++            (0, 1, 1)
++        );
++        assert!(matches!(&filtered.entries[0].item,BrowserItem::Model(slug) if slug=="asset_1"));
++        {
++            let viewer = app.world.res_mut::<ViewerResources>();
++            *viewer.browsers.models.lock().unwrap() = FetchState::Failed;
++        }
++        let failed = snapshot(&app.world).browser.unwrap();
++        assert_eq!(failed.status, BrowserStatus::Failed);
++        assert!(failed.entries.is_empty());
++        assert_eq!(
++            filtered.entries[0].label, "Model 001",
++            "snapshots own catalog data"
++        );
++        submit(&mut app.world, ViewerAction::CloseBrowser).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert!(snapshot(&app.world).browser.is_none());
 +    }
 +    #[test]
 +    fn original_native_frontend_still_composes_and_starts() {
