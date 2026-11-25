@@ -105,6 +105,9 @@ impl Worker {
             && !state.fallback
         {
             state.fallback = true;
+            // Do not hand another obsolete GPU image to the failing importer.
+            state.image = None;
+            state.changed = true;
             state.status.fallback_reason = Some(error);
             state.revision += 1;
             self.shared.1.notify_one();
@@ -389,6 +392,7 @@ fn run(
             );
         if (revision != applied || host.continuous() || input_pending)
             && transport.can_submit()
+            && !(gpu && fallback)
             && (!resize_requested || (transport.can_resize() && retirement_capacity))
         {
             if request.width == 0 || request.height == 0 {
@@ -486,37 +490,40 @@ fn run(
         if let Transport::Shared(ring) = &mut transport
             && let Some((frame, id)) = ring.take_ready()
         {
-            published_frames += 1;
-            if trace_gpu && published_frames.is_multiple_of(300) {
-                eprintln!(
-                    "Shared GPU progress: published={published_frames}, submitted={sequence}, pending={}, size={}x{}, elapsed={:.1}s",
-                    ring.pending_count(),
+            let mut state = shared.0.lock().unwrap();
+            if !state.fallback {
+                published_frames += 1;
+                if trace_gpu && published_frames.is_multiple_of(300) {
+                    eprintln!(
+                        "Shared GPU progress: published={published_frames}, submitted={sequence}, pending={}, size={}x{}, elapsed={:.1}s",
+                        ring.pending_count(),
+                        frame.width,
+                        frame.height,
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+                state.diagnostics = format!(
+                    "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
+                    host.renderer().gpu_profile.name,
                     frame.width,
                     frame.height,
-                    started.elapsed().as_secs_f64()
+                    id.sequence
                 );
+                let info = FrameInfo {
+                    id,
+                    width: frame.width,
+                    height: frame.height,
+                    color_space: ColorSpace::Gamma22,
+                    alpha: AlphaMode::Opaque,
+                };
+                state.image = Some(ViewportFrame {
+                    image: Arc::new(RenderImage::from_external(frame)),
+                    info,
+                });
+                state.changed = true;
             }
-            let mut state = shared.0.lock().unwrap();
-            state.diagnostics = format!(
-                "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
-                host.renderer().gpu_profile.name,
-                frame.width,
-                frame.height,
-                id.sequence
-            );
-            let info = FrameInfo {
-                id,
-                width: frame.width,
-                height: frame.height,
-                color_space: ColorSpace::Gamma22,
-                alpha: AlphaMode::Opaque,
-            };
-            state.image = Some(ViewportFrame {
-                image: Arc::new(RenderImage::from_external(frame)),
-                info,
-            });
-            state.changed = true;
         }
+
         if let Some(entity) = host.poll_pick() {
             pick_pending = false;
             let mut state = shared.0.lock().unwrap();
@@ -701,6 +708,43 @@ mod tests {
         let failed = worker.presentation_status();
         assert_eq!(failed.error.as_deref(), Some("readback upload rejected"));
         assert_eq!(failed.fallback_reason, status.fallback_reason);
+        worker.shutdown().unwrap().join().unwrap();
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires D3D12 sharing on a native Windows GPU"]
+    fn importer_failure_replaces_gpu_mailbox_with_real_readback() {
+        let mut worker = Worker::new(
+            BackendPreference::Auto,
+            Arc::new(|backends, w, h| {
+                Ok(Box::new(ContinuousHost(pollster::block_on(
+                    SceneHost::cube_with_backends(w, h, backends),
+                )?)))
+            }),
+        );
+        wait_for(&worker, |s| s.image.is_some());
+        assert_eq!(
+            worker.presentation_status().active,
+            Some(PresentationBackend::WindowsShared)
+        );
+        let old = worker.take().0.unwrap();
+        assert!(old.image.as_bytes(0).is_none());
+        worker.paint_failed("importer deliberately unsupported".into());
+        wait_for(&worker, |s| {
+            s.status.active == Some(PresentationBackend::Readback) && s.image.is_some()
+        });
+        let frame = worker.take().0.unwrap();
+        assert!(
+            frame.image.as_bytes(0).is_some(),
+            "fallback must contain actual CPU pixels"
+        );
+        let status = worker.presentation_status();
+        assert!(status.error.is_none());
+        assert_eq!(
+            status.fallback_reason.as_deref(),
+            Some("importer deliberately unsupported")
+        );
+        drop(old);
         worker.shutdown().unwrap().join().unwrap();
     }
 }
