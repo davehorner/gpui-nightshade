@@ -14,6 +14,14 @@ Select a mesh with morph targets to edit its indexed weights (0–1) in the insp
 
 Core tests exercise player/layer actions, actual morph state, owned snapshots and skeleton toggling. UI binding tests reject invalid weights and stale scene/layer edits. Live Windows checks loaded AnimatedMorphCube, added a layer and verified a GPUI weight edit through MCP, paused playback and visibly changed the morph, then loaded SimpleSkin and verified its skeleton toggle and two-joint count. Undo/Redo buttons reflect trunk history availability; creation is not recorded by trunk's current history implementation. Core regression tests verify transform, light and camera edit undo.
 
+## Rendering and output
+
+The inspector has fixed Selection and Rendering tabs. Rendering exposes exposure/scale, native dropdowns for shading/PBR debug/tonemapping/AA/atmosphere, grid/normals/bounds, bloom/SSAO/SSR/SSGI, sky, sun direction/intensity/shadows, fog color/range and depth-of-field focus settings. Fields apply on Enter. HDR atmosphere remains disabled until an HDR sky is loaded. The underlying dispatcher retains trunk's clamps and settings behavior.
+
+Screenshot opens trunk's native save dialog and writes a scene PNG using the existing asynchronous GPU readback/writer. Export GLB opens the native model dialog and invokes trunk's scene exporter. No native Nightshade presentation window is required. Export is disabled while no scene nodes are available.
+
+Validation: a live GPUI tonemap-menu selection was confirmed through MCP; both native save dialogs wrote files into the workspace. The textured helmet export contained five embedded images/textures and reloaded/rendered successfully (three nodes, 1,290 distinct colors). A separate SimpleSkin export retained its skin and animation, then reloaded and rendered surface-free (five scene nodes, 911 distinct colors). Core tests check effective settings, fog/scale clamping, HDR availability and actual camera/sun components. Exhaustive atmosphere/AA/effect combinations and multiple GPU drivers remain unverified.
+
 ## Asset browser
 
 Open **Assets** or press Ctrl+B. Local library, Khronos, Polyhaven models and Polyhaven skies use trunk's catalog/library queries and loading actions. Search applies on Enter; changing tabs clears the search. Results are paged at sixty entries, with Previous/Next and explicit loading/failure states. Add folder/files uses trunk's native dialogs. Polyhaven tabs expose 1K/2K/4K/8K selection.
@@ -30,4 +38,4 @@ The original agent plugin runs on the same worker-owned world used by the editor
 
 ## Remaining work
 
-Docking, local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, atmosphere, export/screenshot UI, conversion UI, drag/drop and gizmo pointer routing remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.
+Docking, local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, broader render-mode validation, conversion UI, drag/drop and gizmo pointer routing remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.

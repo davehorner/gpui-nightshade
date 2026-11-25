@@ -563,7 +563,7 @@ diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
 new file mode 100644
 --- /dev/null
 +++ b/apps/viewer/src/core.rs
-@@ -0,0 +1,648 @@
+@@ -0,0 +1,789 @@
 +//! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
 +pub use crate::data::*;
 +pub use crate::plugin::ViewerCorePlugin;
@@ -637,9 +637,28 @@ new file mode 100644
 +    })
 +}
 +
++#[derive(Clone, Copy)]
++pub struct RenderingControls {
++    pub shading: usize,
++    pub pbr_debug: usize,
++    pub tonemap: usize,
++    pub atmosphere: usize,
++    pub anti_aliasing: usize,
++    pub hdr_loaded: bool,
++    pub show_normals: bool,
++    pub show_bounds: bool,
++    pub fog_start: f32,
++    pub fog_end: f32,
++    pub fog_color: [f32; 3],
++    pub sun_intensity: f32,
++    pub sun_yaw: f32,
++    pub sun_pitch: f32,
++    pub sun_shadows: bool,
++}
 +/// An owned snapshot; no ECS guards, UI entities or mutable resource references escape.
 +#[derive(Clone)]
 +pub struct ViewerSnapshot {
++    pub render: RenderingControls,
 +    pub browser: Option<BrowserSnapshot>,
 +    pub nodes: Vec<SceneRow>,
 +    pub selection: Selection,
@@ -670,6 +689,23 @@ new file mode 100644
 +pub fn snapshot(world: &World) -> ViewerSnapshot {
 +    let viewer = world.res::<crate::resources::ViewerResources>();
 +    ViewerSnapshot {
++        render: RenderingControls {
++            shading: viewer.view.shading,
++            pbr_debug: viewer.view.pbr_debug,
++            tonemap: viewer.view.tonemap,
++            atmosphere: viewer.view.atmosphere,
++            anti_aliasing: viewer.view.anti_aliasing,
++            hdr_loaded: viewer.view.hdr_loaded,
++            show_normals: viewer.view.show_normals,
++            show_bounds: viewer.view.show_bounds,
++            fog_start: viewer.view.fog_start,
++            fog_end: viewer.view.fog_end,
++            fog_color: viewer.view.fog_color,
++            sun_intensity: viewer.sun.intensity,
++            sun_yaw: viewer.sun.yaw,
++            sun_pitch: viewer.sun.pitch,
++            sun_shadows: viewer.sun.shadows,
++        },
 +        browser: browser_snapshot(viewer),
 +        nodes: viewer.model.rows.clone(),
 +        selection: viewer.selection.clone(),
@@ -1116,6 +1152,111 @@ new file mode 100644
 +                .resources
 +                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
 +        );
++    }
++
++    #[test]
++    fn rendering_controls_update_effective_settings_and_scene_components() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        let original = snapshot(&app.world);
++        submit(&mut app.world, ViewerAction::SetAtmosphere(7)).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(
++            snapshot(&app.world).render.atmosphere,
++            original.render.atmosphere,
++            "HDR needs a loaded sky"
++        );
++        for action in [
++            ViewerAction::SetAtmosphere(5),
++            ViewerAction::SetTonemap(4),
++            ViewerAction::SetAntiAliasing(2),
++            ViewerAction::SetRenderScale(10.),
++            ViewerAction::SetSsao(true),
++            ViewerAction::SetBloom(true),
++            ViewerAction::SetSsr(true),
++            ViewerAction::SetSsgi(true),
++            ViewerAction::SetFog(true),
++            ViewerAction::SetFogStart(10.),
++            ViewerAction::SetFogEnd(5.),
++            ViewerAction::SetFogColor([0.1, 0.2, 0.3]),
++            ViewerAction::SetDepthOfField(true),
++            ViewerAction::SetFocusDistance(2.),
++            ViewerAction::SetFocusRange(1.),
++            ViewerAction::SetSunIntensity(8.),
++            ViewerAction::SetSunShadows(false),
++            ViewerAction::SetSunYaw(45.),
++            ViewerAction::SetSunPitch(-20.),
++            ViewerAction::SetShowNormals(true),
++            ViewerAction::SetShowBounds(true),
++            ViewerAction::SetShadingMode(3),
++            ViewerAction::SetPbrDebug(1),
++        ] {
++            submit(&mut app.world, action).unwrap();
++        }
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let state = snapshot(&app.world);
++        assert_eq!(
++            (
++                state.render.atmosphere,
++                state.render.tonemap,
++                state.render.anti_aliasing
++            ),
++            (5, 4, 2)
++        );
++        assert!(matches!(
++            state.settings.atmosphere,
++            nightshade_graphics::prelude::Atmosphere::Sunset
++        ));
++        assert!(matches!(
++            state.settings.anti_aliasing,
++            nightshade_render::data::config::AntiAliasing::Taa
++        ));
++        assert_eq!(state.settings.render_scale, 2.);
++        assert!(
++            state.settings.ssao_enabled
++                && state.settings.bloom_enabled
++                && state.settings.ssr_enabled
++                && state.settings.ssgi_enabled
++        );
++        let fog = state.settings.fog.as_ref().unwrap();
++        assert_eq!(fog.start, 10.);
++        assert!((fog.end - 10.1).abs() < 0.001);
++        assert_eq!(fog.color, [0.1, 0.2, 0.3]);
++        assert!(state.settings.depth_of_field.enabled);
++        assert_eq!(state.settings.depth_of_field.focus_distance, 2.);
++        assert_eq!(state.settings.depth_of_field.focus_range, 1.);
++        assert!(state.render.show_normals && state.render.show_bounds);
++        let viewer = app.world.res::<crate::resources::ViewerResources>();
++        let sun = viewer.sun.entity.unwrap();
++        let light = app
++            .world
++            .storage
++            .get::<nightshade_graphics::prelude::Light>(sun)
++            .unwrap();
++        assert_eq!(light.intensity, 8.);
++        assert!(!light.cast_shadows);
++        let camera = viewer.camera_input.viewer_camera.unwrap();
++        assert!(matches!(
++            app.world
++                .storage
++                .get::<nightshade_camera::components::ViewportShading>(camera)
++                .unwrap()
++                .mode,
++            nightshade_camera::components::ShadingMode::Wireframe
++        ));
 +    }
 +    #[test]
 +    fn original_native_frontend_still_composes_and_starts() {

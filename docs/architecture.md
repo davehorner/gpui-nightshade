@@ -27,3 +27,5 @@ The GPUI editor sends existing `ViewerAction` values through a 256-entry bridge 
 Asset browsing reuses trunk page queries through owned snapshots and a search action in the original dispatcher. The GPUI thumbnail cache requests only the current page, caps HTTP work at four requests, decodes off-thread, rejects oversized inputs and explicitly evicts images on page changes/entity release. Local preview generation is not delegated to a hidden native viewer.
 
 Animation controls reuse trunk player/layer/morph/skeleton actions. Snapshots copy morph values from the ECS rather than stale import metadata. Dynamic input entities are retained only for the selected mesh and active layers; subscriptions and focus are released when their binding disappears. Scene root/generation and clip checks reject stale frontend weight edits.
+
+The rendering pane uses owned control indices and effective RenderSettings snapshots, dispatching the same settings actions used by the native frontend and agent. Screenshot capture reuses the renderer queue/readback/writer; GLB export reuses trunk scene gathering and serialization. Native dialogs and export operations run on the viewer worker.

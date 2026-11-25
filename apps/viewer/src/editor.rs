@@ -1,4 +1,5 @@
 mod animation;
+mod rendering;
 use animation::{WeightEditor, WeightTarget};
 use gpui_kit::base::Disableable;
 use gpui_kit::{
@@ -32,6 +33,8 @@ struct Editor {
     field_selection: Option<(u32, u32)>,
     thumbnails: crate::thumbnails::Thumbnails,
     weights: HashMap<WeightTarget, WeightEditor>,
+    render_page: bool,
+    inspector_scroll: ScrollHandle,
 }
 impl Editor {
     fn new(
@@ -67,6 +70,15 @@ impl Editor {
             "Playback speed",
             "Search assets — Enter to apply",
             "Blend seconds",
+            "Render scale (0.25–2)",
+            "Fog start",
+            "Fog end",
+            "Fog RGB",
+            "Focus distance",
+            "Focus range",
+            "Sun intensity",
+            "Sun yaw degrees",
+            "Sun pitch degrees",
         ];
         let fields: Vec<_> = labels
             .iter()
@@ -121,6 +133,8 @@ impl Editor {
             field_selection: None,
             thumbnails: Default::default(),
             weights: HashMap::new(),
+            render_page: false,
+            inspector_scroll: ScrollHandle::new(),
         }
     }
     fn send(&mut self, action: Action, cx: &mut Context<Self>) {
@@ -216,6 +230,21 @@ impl Editor {
             21 => scalar().filter(|v| *v > 0.).map(Action::SetAnimationSpeed),
             22 => Some(Action::SetBrowserSearch(value.clone())),
             23 => scalar().filter(|v| *v >= 0.).map(Action::SetBlendTime),
+            24 => scalar()
+                .filter(|v| (0.25..=2.0).contains(v))
+                .map(Action::SetRenderScale),
+            25 => scalar().filter(|v| *v >= 0.).map(Action::SetFogStart),
+            26 => scalar().filter(|v| *v > 0.).map(Action::SetFogEnd),
+            27 => vector()
+                .filter(|v| v.iter().all(|v| (0.0..=1.0).contains(v)))
+                .map(Action::SetFogColor),
+            28 => scalar()
+                .filter(|v| *v >= 0.01)
+                .map(Action::SetFocusDistance),
+            29 => scalar().filter(|v| *v >= 0.01).map(Action::SetFocusRange),
+            30 => scalar().filter(|v| *v >= 0.).map(Action::SetSunIntensity),
+            31 => scalar().map(Action::SetSunYaw),
+            32 => scalar().map(Action::SetSunPitch),
             _ => None,
         };
         if let Some(action) = action {
@@ -259,6 +288,15 @@ impl Editor {
                 .as_ref()
                 .map_or(String::new(), |b| b.query.clone()),
             format!("{:.3}", snapshot.animation.blend_time),
+            format!("{:.3}", snapshot.settings.render_scale),
+            format!("{:.3}", snapshot.render.fog_start),
+            format!("{:.3}", snapshot.render.fog_end),
+            vector(snapshot.render.fog_color),
+            format!("{:.3}", snapshot.settings.depth_of_field.focus_distance),
+            format!("{:.3}", snapshot.settings.depth_of_field.focus_range),
+            format!("{:.3}", snapshot.render.sun_intensity),
+            format!("{:.3}", snapshot.render.sun_yaw),
+            format!("{:.3}", snapshot.render.sun_pitch),
         ];
         for (field, value) in self.fields.iter().zip(values) {
             if !field.focus_handle(cx).is_focused(window)
@@ -281,6 +319,7 @@ impl Editor {
             Action::TogglePlayback | Action::StopAnimation => {
                 self.snapshot.as_ref().is_none_or(|s| s.clips.is_empty())
             }
+            Action::ExportModel => self.snapshot.as_ref().is_none_or(|s| s.nodes.is_empty()),
             Action::ApplyHeldClips => self
                 .snapshot
                 .as_ref()
@@ -476,13 +515,11 @@ impl Render for Editor {
         if let Some(snapshot) = &snapshot {
             let selected = snapshot.selection.selected.map(|e| (e.id, e.generation));
             if selected != self.field_selection {
+                if !self.render_page {
+                    self.inspector_scroll.set_offset(point(px(0.), px(0.)));
+                }
                 if self.fields.iter().enumerate().any(|(i, field)| {
-                    i != 6
-                        && i != 7
-                        && i != 21
-                        && i != 22
-                        && i != 23
-                        && field.focus_handle(cx).is_focused(window)
+                    matches!(i,0..=5|8..=20) && field.focus_handle(cx).is_focused(window)
                 }) {
                     window.focus(&self.viewport.focus_handle(cx), cx);
                 }
@@ -537,17 +574,42 @@ impl Render for Editor {
             }
         }
         let mut inspector = div()
-            .id("inspector")
-            .w(px(310.))
-            .h_full()
+            .id("inspector-body")
+            .track_scroll(&self.inspector_scroll)
+            .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap_2()
             .p_3()
             .bg(rgb(0x20242d));
+        let inspector_tabs = div()
+            .flex()
+            .gap_2()
+            .p_2()
+            .child(
+                Button::new("selection-tab")
+                    .label("Selection")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        window.focus(&view.viewport.focus_handle(cx), cx);
+                        view.render_page = false;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("render-tab")
+                    .label("Rendering")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        window.focus(&view.viewport.focus_handle(cx), cx);
+                        view.render_page = true;
+                        cx.notify();
+                    })),
+            );
         if let Some(snapshot) = &snapshot {
-            if snapshot.selection.selected.is_some() {
+            if self.render_page {
+                inspector = inspector.child(self.rendering_panel(snapshot, cx));
+            } else if snapshot.selection.selected.is_some() {
                 inspector = inspector.child("INSPECTOR — Enter to apply");
                 for (index, label) in ["Name", "Translation", "Rotation (degrees)", "Scale"]
                     .iter()
@@ -716,23 +778,15 @@ impl Render for Editor {
             } else {
                 inspector = inspector.child("Select an entity in the hierarchy or viewport");
             }
-            inspector = inspector
-                .child("RENDERING")
-                .child("Exposure")
-                .child(Input::new(&self.fields[6]))
-                .child(self.action_button(
-                    "grid",
-                    "Toggle grid",
-                    Action::SetGrid(!snapshot.grid),
-                    cx,
-                ))
-                .child(self.action_button(
-                    "bloom",
-                    "Toggle bloom",
-                    Action::SetBloom(!snapshot.settings.bloom_enabled),
-                    cx,
-                ));
         }
+        let inspector = div()
+            .w(px(310.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(0x20242d))
+            .child(inspector_tabs)
+            .child(inspector);
         let timeline = snapshot.as_ref().map(|s| self.animation_panel(s, cx));
 
         div()
@@ -804,6 +858,8 @@ impl Render for Editor {
                         cx,
                     ))
                     .child(self.action_button("frame", "Frame", Action::FrameModel, cx))
+                    .child(self.action_button("screenshot", "Screenshot", Action::Screenshot, cx))
+                    .child(self.action_button("export", "Export GLB", Action::ExportModel, cx))
                     .child(self.action_button("undo", "Undo", Action::Undo, cx))
                     .child(self.action_button("redo", "Redo", Action::Redo, cx))
                     .child(self.action_button(
