@@ -1,4 +1,5 @@
-//! Native sampling isolation: no GPUI atlas, window, or swapchain participates.
+//! Native sampling isolation without a GPUI atlas or window. An optional
+//! unattached composition swapchain exercises flip-buffer/Present mechanics.
 use super::*;
 use gpui_nightshade::host::{CameraPose, SceneHost, ViewportHost};
 use windows::{
@@ -58,22 +59,66 @@ unsafe fn compile(source: &str, entry: PCSTR, target: PCSTR) -> Vec<u8> {
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn changing_shared_frames_sample_without_gpui_compositor() {
-    run_sampling(1, false);
+    run_sampling(1, false, false, false);
 }
 
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn pipelined_shared_frames_sample_without_gpui_compositor() {
-    run_sampling(3, false);
+    run_sampling(3, false, false, false);
 }
 
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn full_viewer_frames_sample_without_gpui_compositor() {
-    run_sampling(3, true);
+    run_sampling(3, true, false, false);
 }
 
-fn run_sampling(depth: usize, full_scene: bool) {
+#[test]
+#[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
+fn gpui_sprite_shader_samples_full_viewer_without_swapchain() {
+    run_sampling(3, true, true, false);
+}
+
+#[test]
+#[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
+fn gpui_sprite_shader_samples_full_viewer_with_unattached_swapchain() {
+    run_sampling(3, true, true, true);
+}
+
+unsafe fn immutable_buffer(device: &ID3D11Device, words: &[u32], structured: bool) -> ID3D11Buffer {
+    let mut buffer = None;
+    unsafe {
+        device
+            .CreateBuffer(
+                &D3D11_BUFFER_DESC {
+                    ByteWidth: std::mem::size_of_val(words) as u32,
+                    Usage: D3D11_USAGE_IMMUTABLE,
+                    BindFlags: if structured {
+                        D3D11_BIND_SHADER_RESOURCE.0
+                    } else {
+                        D3D11_BIND_CONSTANT_BUFFER.0
+                    } as u32,
+                    MiscFlags: if structured {
+                        D3D11_RESOURCE_MISC_BUFFER_STRUCTURED.0 as u32
+                    } else {
+                        0
+                    },
+                    StructureByteStride: if structured { 96 } else { 0 },
+                    ..Default::default()
+                },
+                Some(&D3D11_SUBRESOURCE_DATA {
+                    pSysMem: words.as_ptr().cast(),
+                    ..Default::default()
+                }),
+                Some(&mut buffer),
+            )
+            .unwrap();
+    }
+    buffer.unwrap()
+}
+
+fn run_sampling(depth: usize, full_scene: bool, gpui_shader: bool, swapchain: bool) {
     let (width, height) = (1351, 715);
     let mut host: Box<dyn ViewportHost> = if full_scene {
         use nightshade_viewer_core::{
@@ -155,24 +200,80 @@ Out vs(uint id:SV_VertexID) {
 }
 float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
 "#;
+        // Compile the checked-in upstream shader itself, inlining its sole
+        // include so no custom include handler or copied shader body is needed.
+        let upstream_source =
+            include_str!("../../../../upstream/gpui-snapshot/gpui-windows/src/shaders.hlsl")
+                .replace(
+                    "#include \"alpha_correction.hlsl\"",
+                    include_str!(
+                        "../../../../upstream/gpui-snapshot/gpui-windows/src/alpha_correction.hlsl"
+                    ),
+                );
+        let (source, vertex_entry, pixel_entry) = if gpui_shader {
+            (
+                upstream_source.as_str(),
+                s!("polychrome_sprite_vertex"),
+                s!("polychrome_sprite_fragment"),
+            )
+        } else {
+            (source, s!("vs"), s!("ps"))
+        };
         let mut vs = None;
         let mut ps = None;
         device
             .CreateVertexShader(
-                &compile(source, s!("vs"), s!("vs_5_0")),
+                &compile(source, vertex_entry, s!("vs_5_0")),
                 None,
                 Some(&mut vs),
             )
             .unwrap();
         device
             .CreatePixelShader(
-                &compile(source, s!("ps"), s!("ps_5_0")),
+                &compile(source, pixel_entry, s!("ps_5_0")),
                 None,
                 Some(&mut ps),
             )
             .unwrap();
         context.VSSetShader(vs.as_ref().unwrap(), None);
         context.PSSetShader(ps.as_ref().unwrap(), None);
+        if gpui_shader {
+            use gpui_kit::PolychromeSprite;
+            assert_eq!(std::mem::size_of::<PolychromeSprite>(), 96);
+            assert_eq!(std::mem::offset_of!(PolychromeSprite, tile), 8);
+            assert_eq!(std::mem::offset_of!(PolychromeSprite, grayscale), 40);
+            assert_eq!(std::mem::offset_of!(PolychromeSprite, opacity), 44);
+            assert_eq!(std::mem::offset_of!(PolychromeSprite, bounds), 48);
+            assert_eq!(std::mem::offset_of!(PolychromeSprite, content_mask), 64);
+            assert_eq!(std::mem::offset_of!(PolychromeSprite, corner_radii), 80);
+            let mut globals = [0u32; 12];
+            globals[4] = (width as f32).to_bits();
+            globals[5] = (height as f32).to_bits();
+            let globals = immutable_buffer(&device, &globals, false);
+            let batch = immutable_buffer(&device, &[1, 0, 0, 0], false);
+            context.VSSetConstantBuffers(0, Some(&[Some(globals.clone()), Some(batch.clone())]));
+            context.PSSetConstantBuffers(0, Some(&[Some(globals), Some(batch)]));
+            // HLSL PolychromeSprite layout: 96 bytes. Only instance 1 has
+            // nonempty bounds, so visible output also verifies batch offset.
+            let mut instances = [0u32; 72];
+            let sprite = &mut instances[24..48];
+            sprite[8] = width;
+            sprite[9] = height;
+            sprite[11] = 1f32.to_bits();
+            for offset in [14, 18] {
+                sprite[offset] = (width as f32).to_bits();
+            }
+            for offset in [15, 19] {
+                sprite[offset] = (height as f32).to_bits();
+            }
+            let instances = immutable_buffer(&device, &instances, true);
+            let mut view = None;
+            device
+                .CreateShaderResourceView(&instances, None, Some(&mut view))
+                .unwrap();
+            context.VSSetShaderResources(1, Some(&[view.clone()]));
+            context.PSSetShaderResources(1, Some(&[view]));
+        }
         context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         let mut sampler = None;
         device
@@ -205,16 +306,42 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             ..Default::default()
         };
-        let mut output = None;
-        device
-            .CreateTexture2D(&desc, None, Some(&mut output))
-            .unwrap();
-        let output = output.unwrap();
+        // This composition swapchain deliberately has no DirectComposition
+        // visual or HWND. It tests flip-buffer/Present mechanics, not DWM display.
+        let swapchain = swapchain.then(|| {
+            factory
+                .CreateSwapChainForComposition(
+                    &device,
+                    &DXGI_SWAP_CHAIN_DESC1 {
+                        Width: width,
+                        Height: height,
+                        Format: desc.Format,
+                        SampleDesc: desc.SampleDesc,
+                        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                        BufferCount: 3,
+                        Scaling: DXGI_SCALING_STRETCH,
+                        SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+                        AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap()
+        });
+        let output: ID3D11Texture2D = if let Some(swapchain) = &swapchain {
+            swapchain.GetBuffer(0).unwrap()
+        } else {
+            let mut output = None;
+            device
+                .CreateTexture2D(&desc, None, Some(&mut output))
+                .unwrap();
+            output.unwrap()
+        };
         let mut rtv = None;
         device
             .CreateRenderTargetView(&output, None, Some(&mut rtv))
             .unwrap();
-        context.OMSetRenderTargets(Some(&[rtv]), None);
+        context.OMSetRenderTargets(Some(&[rtv.clone()]), None);
         context.RSSetViewports(Some(&[D3D11_VIEWPORT {
             Width: width as f32,
             Height: height as f32,
@@ -226,6 +353,10 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             .map(|n| n.parse::<u32>().unwrap())
             .unwrap_or(120);
         assert!(frames > 0);
+        if swapchain.is_some() {
+            assert!(frames >= 4, "swapchain test needs at least four samples");
+        }
+        let mut presents = 0u32;
         let gate = if depth == 3 && frames >= 3 {
             let fence: ID3D12Fence = ring.device.CreateFence(0, D3D12_FENCE_FLAG_SHARED).unwrap();
             let handle = SharedHandle::from_owned(
@@ -290,10 +421,12 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             device
                 .CreateShaderResourceView(&texture, None, Some(&mut srv))
                 .unwrap();
+            // Flip-model Present unbinds the backbuffer from the pipeline.
+            context.OMSetRenderTargets(Some(&[rtv.clone()]), None);
             owner.before_draw().unwrap();
             context.VSSetShaderResources(0, Some(&[srv.clone()]));
             context.PSSetShaderResources(0, Some(&[srv.clone()]));
-            context.Draw(4, 0);
+            context.DrawInstanced(4, 1, 0, 0);
             owner.after_draw().unwrap();
             in_flight.push_back((
                 slot.consumed_fence.clone(),
@@ -318,6 +451,15 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
                     "all three consumer reads must remain pending behind the gate"
                 );
             }
+            // Drain the gated initial batch before Present: blocking Present
+            // behind our own CPU-released gate would deadlock this test.
+            if let Some(swapchain) = &swapchain
+                && index >= 2
+                && index + 1 < frames
+            {
+                swapchain.Present(0, DXGI_PRESENT(0)).ok().unwrap();
+                presents += 1;
+            }
             device.GetDeviceRemovedReason().unwrap();
 
             if (index + 1) % 30 == 0 {
@@ -330,6 +472,11 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
         if frames >= 3 && depth == 3 {
             assert_eq!(used_slots.len(), 3, "pipeline must exercise all ring slots");
         }
+        if swapchain.is_some() {
+            assert_eq!(presents, frames - 3);
+        }
+        // Do not Present the final draw: read its known backbuffer before flip
+        // rotation. Earlier draws exercised Present after releasing the gate.
         let mut staging = None;
         device
             .CreateTexture2D(
@@ -369,7 +516,8 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             colors.len()
         );
         eprintln!(
-            "standalone D3D11: full_scene={full_scene}, depth={depth}, {frames} samples, {} colors, {width}x{height}",
+            "standalone D3D11: swapchain={}, presents={presents}, gpui_shader={gpui_shader}, full_scene={full_scene}, depth={depth}, {frames} samples, {} colors, {width}x{height}",
+            swapchain.is_some(),
             colors.len()
         );
     }
