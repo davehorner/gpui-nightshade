@@ -62,7 +62,7 @@ Live Windows validation displayed Khronos thumbnails and loaded the textured Avo
 
 ## Native MCP
 
-The original agent plugin runs on the same worker-owned world used by the editor. Pass `--agent-port=PORT` to select its localhost port or `--no-agent` to disable it. The endpoint accepts HTTP POST JSON-RPC (`initialize`, `tools/list`, `tools/call`) and retains trunk's tool names and schemas. No browser or second scene is involved.
+The original agent plugin runs on the same worker-owned world used by the editor. Pass `--agent-port=PORT` to select its localhost port or `--no-agent` to disable it. The endpoint accepts HTTP POST JSON-RPC (`initialize`, `tools/list`, `tools/call`) and retains trunk's tool names with stricter argument schemas and additional animation/morph tools. See the [MCP contract](mcp.md) for mutation results, history and compatibility. No browser or second scene is involved.
 
 `just test-core` runs the UI-free core, native frontend startup, light/camera history and localhost MCP regression tests. The MCP test creates a primitive through frontend actions, reads it over HTTP, selects/renames/transforms it, and checks the resulting owned snapshot. It needs permission to open/connect localhost sockets. A separate live GPUI smoke check verified that MCP selection/rename updated the hierarchy and inspector while the textured model was rendering. A keyboard edit of spotlight intensity in GPUI, applied with Enter, was read back as the new value through MCP; undo was then dispatched through that same endpoint.
 

@@ -1,0 +1,1236 @@
+diff --git a/apps/viewer/src/commands/agent.rs b/apps/viewer/src/commands/agent.rs
+--- a/apps/viewer/src/commands/agent.rs
++++ b/apps/viewer/src/commands/agent.rs
+@@ -2,17 +2,16 @@
+ 
+ use nightshade::prelude::*;
+ use nightshade_graphics::prelude::CommandQueues;
+-use nightshade_scene::contract::LocalTransform;
+ use serde_json::{Value, json};
+ 
+ use crate::commands::crew::{hire, hold_the_agent};
+ use crate::commands::files::route_drop;
+-use crate::commands::material::write_field;
++use crate::commands::material::edit_material;
+ use crate::data::{
+-    ALPHA_LABELS, CameraArgs, ClipArgs, EntityArgs, ExportArgs, GizmoArgs, GizmoMode, LayerArgs,
+-    LightArgs, LightField, LightWriteArgs, MaterialArgs, MaterialField, NameArgs, PageArgs,
+-    PathArgs, PrimitiveArgs, RenameArgs, RenderArgs, ScreenshotArgs, SelectArgs, SlugArgs,
+-    TransformArgs, ViewerAction, VisibleArgs,
++    ALPHA_LABELS, AnimationArgs, CameraArgs, ClipArgs, EntityArgs, ExportArgs, GizmoArgs,
++    GizmoMode, LayerArgs, LayerWeightArgs, LightArgs, LightField, LightWriteArgs, MaterialArgs,
++    MaterialField, MorphWeightArgs, NameArgs, PageArgs, PathArgs, PrimitiveArgs, RenameArgs,
++    RenderArgs, ScreenshotArgs, SelectArgs, SlugArgs, TransformArgs, ViewerAction, VisibleArgs,
+ };
+ use crate::queries::agent::{
+     animation_state, json_header, library, light_kind, light_of, material_names, material_of,
+@@ -20,21 +19,34 @@
+     take_arguments, tool_list, transform_of, viewer_state,
+ };
+ use crate::queries::files::read_path;
+-use crate::queries::selection::euler_to_quat;
+ use crate::resources::{AgentChannel, Crew, Pending};
+ 
++const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
++const MAX_PENDING_CALLS: usize = 256;
++
+ pub fn take_pending(channel: &AgentChannel) -> Vec<Pending> {
++    let now = std::time::Instant::now();
+     channel
+         .pending
+         .lock()
+-        .map(|mut queue| std::mem::take(&mut *queue))
++        .map(|mut queue| {
++            std::mem::take(&mut *queue)
++                .into_iter()
++                .filter(|call| call.deadline > now)
++                .collect()
++        })
+         .unwrap_or_default()
+ }
+-
+-fn queue_pending(channel: &AgentChannel, pending: Pending) {
+-    if let Ok(mut queue) = channel.pending.lock() {
+-        queue.push(pending);
+-    }
++fn queue_pending(channel: &AgentChannel, pending: Pending) -> Result<(), String> {
++    let mut queue = channel
++        .pending
++        .lock()
++        .map_err(|_| "the viewer queue is unavailable")?;
++    if queue.len() >= MAX_PENDING_CALLS {
++        return Err("the viewer tool queue is full".into());
++    }
++    queue.push(pending);
++    Ok(())
+ }
+ 
+ pub fn start_agent(crew: &mut Crew, port: u16) -> (AgentChannel, Option<String>) {
+@@ -80,9 +92,22 @@
+ }
+ 
+ fn answer_message(queue: &AgentChannel, body: &str) -> Option<Value> {
+-    let message: Value = serde_json::from_str(body).ok()?;
++    let message: Value = match serde_json::from_str(body) {
++        Ok(message) => message,
++        Err(_) => return Some(rpc_error(None, -32700, "invalid JSON")),
++    };
+     let id = message.get("id").cloned();
+-    let method = message.get("method")?.as_str()?.to_string();
++    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
++        || !message.get("method").is_some_and(Value::is_string)
++        || id
++            .as_ref()
++            .is_some_and(|id| !id.is_string() && !id.is_number() && !id.is_null())
++    {
++        return Some(rpc_error(None, -32600, "invalid JSON-RPC request"));
++    }
++    let method = message["method"].as_str().unwrap().to_string();
++    // Notifications have no response and must not enqueue a tools/call mutation.
++    id.as_ref()?;
+     let params = message.get("params").cloned().unwrap_or(Value::Null);
+ 
+     match method.as_str() {
+@@ -105,30 +130,45 @@
+     let Some(name) = params.get("name").and_then(Value::as_str) else {
+         return rpc_error(id, -32602, "the call named no tool");
+     };
++    if !tool_list().iter().any(|tool| tool["name"] == name) {
++        return rpc_error(id, -32602, "no such tool");
++    }
+     let arguments = params
+         .get("arguments")
+         .cloned()
+         .unwrap_or_else(|| json!({}));
+-
+-    let (sender, receiver): (Sender<Value>, Receiver<Value>) = channel();
+-    queue_pending(
++    if !arguments.is_object() {
++        return rpc_error(id, -32602, "tool arguments must be an object");
++    }
++
++    let (sender, receiver): (
++        Sender<Result<Value, String>>,
++        Receiver<Result<Value, String>>,
++    ) = channel();
++    if let Err(message) = queue_pending(
+         queue,
+         Pending {
+             name: name.to_string(),
+             arguments,
+             reply: sender,
++            deadline: std::time::Instant::now() + CALL_TIMEOUT,
+         },
+-    );
+-
+-    match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
+-        Ok(value) => rpc_result(
+-            id,
+-            json!({
+-                "content": [{ "type": "text", "text": value.to_string() }],
+-                "structuredContent": value,
+-                "isError": false,
+-            }),
+-        ),
++    ) {
++        return rpc_error(id, -32000, &message);
++    }
++
++    match receiver.recv_timeout(CALL_TIMEOUT) {
++        Ok(result) => {
++            let is_error = result.is_err();
++            let value = result.unwrap_or_else(|message| json!({ "error": message }));
++            rpc_result(
++                id,
++                json!({
++                    "content": [{ "type": "text", "text": value.to_string() }],
++                    "structuredContent": value, "isError": is_error,
++                }),
++            )
++        }
+         Err(_) => rpc_error(id, -32000, "the viewer did not answer in time"),
+     }
+ }
+@@ -139,6 +179,14 @@
+     name: &str,
+     arguments: Value,
+ ) -> Result<Value, String> {
++    if tool_list().iter().any(|tool| {
++        tool["name"] == name
++            && tool["inputSchema"]["properties"]
++                .as_object()
++                .is_some_and(|p| p.is_empty())
++    }) {
++        take_arguments::<crate::data::Empty>(arguments.clone())?;
++    }
+     match name {
+         "get_viewer_state" => Ok(viewer_state(stage)),
+         "get_scene" => Ok(scene_state(stage)),
+@@ -151,7 +199,7 @@
+             let args: SelectArgs = take_arguments(arguments)?;
+             let entity = args.entity.map(|id| resolve(storage, id)).transpose()?;
+             push_action(stage, ViewerAction::Select(entity));
+-            Ok(json!({ "selected": args.entity }))
++            Ok(json!({ "selected": args.entity, "queued": true }))
+         }
+         "get_transform" => {
+             let args: EntityArgs = take_arguments(arguments)?;
+@@ -161,7 +209,14 @@
+         "set_transform" => {
+             let args: TransformArgs = take_arguments(arguments)?;
+             let entity = resolve(storage, args.entity)?;
+-            write_transform(storage, entity, &args)?;
++            crate::commands::selection::edit_transform(
++                stage.viewer,
++                storage,
++                entity,
++                args.translation,
++                args.rotation,
++                args.scale,
++            )?;
+             transform_of(storage, entity)
+         }
+         "get_material" => {
+@@ -180,7 +235,7 @@
+             let entity = resolve(storage, args.entity)?;
+             push_action(stage, ViewerAction::Select(Some(entity)));
+             push_action(stage, ViewerAction::DeleteSelected);
+-            Ok(json!({ "deleted": args.entity }))
++            Ok(json!({ "deleted": args.entity, "queued": true }))
+         }
+         "add_primitive" => {
+             let args: PrimitiveArgs = take_arguments(arguments)?;
+@@ -188,12 +243,12 @@
+                 stage,
+                 ViewerAction::AddPrimitive(primitive_kind(&args.kind)?),
+             );
+-            Ok(json!({ "added": args.kind }))
++            Ok(json!({ "added": args.kind, "queued": true }))
+         }
+         "add_light" => {
+             let args: LightArgs = take_arguments(arguments)?;
+             push_action(stage, ViewerAction::AddLight(light_kind(&args.kind)?));
+-            Ok(json!({ "added": args.kind }))
++            Ok(json!({ "added": args.kind, "queued": true }))
+         }
+         "load_file" => {
+             let args: PathArgs = take_arguments(arguments)?;
+@@ -202,19 +257,19 @@
+         "load_khronos" => {
+             let args: NameArgs = take_arguments(arguments)?;
+             push_action(stage, ViewerAction::LoadKhronos(args.name.clone()));
+-            Ok(json!({ "loading": args.name }))
++            Ok(json!({ "queued": true, "loading": args.name }))
+         }
+         "load_polyhaven_model" => {
+             let args: SlugArgs = take_arguments(arguments)?;
+             with_resolution(stage, args.resolution);
+             push_action(stage, ViewerAction::LoadPolyhavenModel(args.slug.clone()));
+-            Ok(json!({ "loading": args.slug }))
++            Ok(json!({ "queued": true, "loading": args.slug }))
+         }
+         "load_polyhaven_sky" => {
+             let args: SlugArgs = take_arguments(arguments)?;
+             with_resolution(stage, args.resolution);
+             push_action(stage, ViewerAction::LoadPolyhavenSky(args.slug.clone()));
+-            Ok(json!({ "loading": args.slug }))
++            Ok(json!({ "queued": true, "loading": args.slug }))
+         }
+         "list_library" => {
+             let args: PageArgs = take_arguments(arguments)?;
+@@ -226,13 +281,13 @@
+                 Some(path) => screenshot_to(stage, &path),
+                 None => {
+                     push_action(stage, ViewerAction::Screenshot);
+-                    Ok(json!({ "asking": true }))
++                    Ok(json!({ "queued": true, "asking": true }))
+                 }
+             }
+         }
+         "apply_clips" => {
+             push_action(stage, ViewerAction::ApplyHeldClips);
+-            Ok(json!({ "asking": true }))
++            Ok(json!({ "queued": true, "asking": true }))
+         }
+         "export_model" => {
+             let args: ExportArgs = take_arguments(arguments)?;
+@@ -240,7 +295,7 @@
+                 Some(path) => export_to(stage, storage, &path),
+                 None => {
+                     push_action(stage, ViewerAction::ExportModel);
+-                    Ok(json!({ "asking": true }))
++                    Ok(json!({ "queued": true, "asking": true }))
+                 }
+             }
+         }
+@@ -254,14 +309,14 @@
+                     visible: args.visible,
+                 },
+             );
+-            Ok(json!({ "entity": args.entity, "visible": args.visible }))
++            Ok(json!({ "entity": args.entity, "visible": args.visible, "queued": true }))
+         }
+         "rename_entity" => {
+             let args: RenameArgs = take_arguments(arguments)?;
+             let entity = resolve(storage, args.entity)?;
+             push_action(stage, ViewerAction::Select(Some(entity)));
+             push_action(stage, ViewerAction::Rename(args.name.clone()));
+-            Ok(json!({ "entity": args.entity, "name": args.name }))
++            Ok(json!({ "entity": args.entity, "name": args.name, "queued": true }))
+         }
+         "isolate" => {
+             let args: SelectArgs = take_arguments(arguments)?;
+@@ -278,7 +333,7 @@
+                 None if isolated.is_some() => push_action(stage, ViewerAction::ToggleIsolate),
+                 None => {}
+             }
+-            Ok(json!({ "isolated": args.entity }))
++            Ok(json!({ "isolated": args.entity, "queued": true }))
+         }
+         "get_light" => {
+             let args: EntityArgs = take_arguments(arguments)?;
+@@ -292,27 +347,124 @@
+             light_of(storage, entity)
+         }
+         "undo" => {
++            if stage.viewer.history.done.is_empty() {
++                return Err("there is no edit to undo".into());
++            }
+             push_action(stage, ViewerAction::Undo);
+-            Ok(json!({ "undone": true }))
++            Ok(json!({ "undone": true, "queued": true }))
+         }
+         "redo" => {
++            if stage.viewer.history.undone.is_empty() {
++                return Err("there is no edit to redo".into());
++            }
+             push_action(stage, ViewerAction::Redo);
+-            Ok(json!({ "redone": true }))
++            Ok(json!({ "redone": true, "queued": true }))
++        }
++        "toggle_playback" => {
++            if stage.viewer.model.clips.is_empty() {
++                return Err("there are no animation clips".into());
++            }
++            push_action(stage, ViewerAction::TogglePlayback);
++            Ok(json!({"queued": true}))
++        }
++        "set_animation" => {
++            let args: AnimationArgs = take_arguments(arguments)?;
++            if (args.time.is_some() || args.speed.is_some() || args.looping.is_some())
++                && stage.viewer.model.clips.is_empty()
++            {
++                return Err("there are no animation clips".into());
++            }
++            if args.time.is_some_and(|v| v < 0.0) || args.blend_time.is_some_and(|v| v < 0.0) {
++                return Err("animation times must be nonnegative".into());
++            }
++            if let Some(v) = args.time {
++                push_action(stage, ViewerAction::SeekAnimation(v));
++            }
++            if let Some(v) = args.speed {
++                push_action(stage, ViewerAction::SetAnimationSpeed(v));
++            }
++            if let Some(v) = args.looping {
++                push_action(stage, ViewerAction::SetAnimationLoop(v));
++            }
++            if let Some(v) = args.blend_time {
++                push_action(stage, ViewerAction::SetBlendTime(v));
++            }
++            Ok(json!({"queued": true}))
++        }
++        "set_animation_layer_weight" => {
++            let args: LayerWeightArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.animation.layers.len() {
++                return Err("there is no layer at that index".into());
++            }
++            if !(0.0..=1.0).contains(&args.weight) {
++                return Err("layer weight must be between zero and one".into());
++            }
++            push_action(
++                stage,
++                ViewerAction::SetLayerWeight {
++                    index: args.index,
++                    weight: args.weight,
++                },
++            );
++            Ok(json!({"queued": true}))
++        }
++        "get_morph_weights" | "set_morph_weight" => {
++            use nightshade_render::components::morph::MorphWeights;
++            let entity_id = if name == "get_morph_weights" {
++                take_arguments::<EntityArgs>(arguments.clone())?.entity
++            } else {
++                take_arguments::<MorphWeightArgs>(arguments.clone())?.entity
++            };
++            let entity = resolve(storage, entity_id)?;
++            let weights = storage
++                .get::<MorphWeights>(entity)
++                .ok_or("the node has no morph weights")?;
++            if name == "get_morph_weights" {
++                return Ok(json!({"entity": entity_id, "weights": weights.weights}));
++            }
++            let args: MorphWeightArgs = take_arguments(arguments)?;
++            if args.index >= weights.weights.len() {
++                return Err("there is no morph weight at that index".into());
++            }
++            if !(0.0..=1.0).contains(&args.weight) {
++                return Err("morph weight must be between zero and one".into());
++            }
++            push_action(
++                stage,
++                ViewerAction::SetMorphWeight {
++                    entity,
++                    index: args.index,
++                    weight: args.weight,
++                },
++            );
++            Ok(json!({"queued": true}))
+         }
+         "play_clip" => {
+             let args: ClipArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.model.clips.len() {
++                return Err("there is no clip at that index".into());
++            }
++            if args.blend_time.is_some_and(|time| time < 0.0) {
++                return Err("blend time must be nonnegative".into());
++            }
+             if let Some(time) = args.blend_time {
+                 push_action(stage, ViewerAction::SetBlendTime(time));
+             }
+             push_action(stage, ViewerAction::BlendToClip(args.index));
+-            Ok(json!({ "playing": args.index }))
++            Ok(json!({ "playing": args.index, "queued": true }))
+         }
+         "stop_animation" => {
+             push_action(stage, ViewerAction::StopAnimation);
+-            Ok(json!({ "stopped": true }))
++            Ok(json!({ "stopped": true, "queued": true }))
+         }
+         "add_animation_layer" => {
+             let args: LayerArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.model.clips.len() {
++                return Err("there is no clip at that index".into());
++            }
++            if args.weight.is_some_and(|w| !(0.0..=1.0).contains(&w)) {
++                return Err("layer weight must be between zero and one".into());
++            }
+             push_action(
+                 stage,
+                 ViewerAction::AddAnimationLayer {
+@@ -320,12 +472,15 @@
+                     weight: args.weight.unwrap_or(0.5),
+                 },
+             );
+-            Ok(json!({ "layered": args.index }))
++            Ok(json!({ "layered": args.index, "queued": true }))
+         }
+         "remove_animation_layer" => {
+             let args: LayerArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.animation.layers.len() {
++                return Err("there is no layer at that index".into());
++            }
+             push_action(stage, ViewerAction::RemoveAnimationLayer(args.index));
+-            Ok(json!({ "removed": args.index }))
++            Ok(json!({ "removed": args.index, "queued": true }))
+         }
+         "set_handle_mode" => {
+             let args: GizmoArgs = take_arguments(arguments)?;
+@@ -334,17 +489,17 @@
+         "set_render" => {
+             let args: RenderArgs = take_arguments(arguments)?;
+             apply_render_arguments(stage, &args);
+-            Ok(viewer_state(stage))
++            Ok(json!({ "queued": true, "state_before": viewer_state(stage) }))
+         }
+         "set_active_camera" => {
+             let args: CameraArgs = take_arguments(arguments)?;
+             let entity = args.entity.map(|id| resolve(storage, id)).transpose()?;
+             push_action(stage, ViewerAction::SetActiveCamera(entity));
+-            Ok(json!({ "camera": args.entity }))
++            Ok(json!({ "camera": args.entity, "queued": true }))
+         }
+         "frame_model" => {
+             push_action(stage, ViewerAction::FrameModel);
+-            Ok(json!({ "framing": true }))
++            Ok(json!({ "framing": true, "queued": true }))
+         }
+         _ => Err(format!("there is no tool named {name}")),
+     }
+@@ -352,26 +507,6 @@
+ 
+ fn push_action(stage: &mut crate::resources::Stage<'_>, action: ViewerAction) {
+     stage.viewer.actions.push(action);
+-}
+-
+-fn write_transform(
+-    storage: &mut nightshade::ecs::Storage,
+-    entity: Entity,
+-    args: &TransformArgs,
+-) -> Result<(), String> {
+-    let transform = storage
+-        .get_mut::<LocalTransform>(entity)
+-        .ok_or("that node carries no transform")?;
+-    if let Some(values) = args.translation {
+-        transform.translation = Vec3::new(values[0], values[1], values[2]);
+-    }
+-    if let Some(values) = args.rotation {
+-        transform.rotation = euler_to_quat(values);
+-    }
+-    if let Some(values) = args.scale {
+-        transform.scale = Vec3::new(values[0], values[1], values[2]);
+-    }
+-    Ok(())
+ }
+ 
+ fn write_material(
+@@ -432,17 +567,12 @@
+         fields.push(MaterialField::AlphaMode(index));
+     }
+ 
+-    let registry = &mut *stage.materials;
+-    for field in fields {
+-        write_field(registry, &name, field);
+-    }
+-    stage.viewer.view.detail_dirty = true;
+-    Ok(())
++    edit_material(stage, &name, fields)
+ }
+ 
+ pub fn write_light(
+     stage: &mut crate::resources::Stage<'_>,
+-    storage: &nightshade::ecs::Storage,
++    storage: &mut nightshade::ecs::Storage,
+     entity: Entity,
+     args: &LightWriteArgs,
+ ) -> Result<(), String> {
+@@ -468,11 +598,7 @@
+     if let Some(value) = args.cast_shadows {
+         fields.push(LightField::CastShadows(value));
+     }
+-    push_action(stage, ViewerAction::Select(Some(entity)));
+-    for field in fields {
+-        push_action(stage, ViewerAction::SetLightField(field));
+-    }
+-    Ok(())
++    crate::commands::selection::edit_light(stage.viewer, storage, entity, fields)
+ }
+ 
+ pub fn load_file(stage: &mut crate::resources::Stage<'_>, path: &str) -> Result<Value, String> {
+@@ -491,7 +617,7 @@
+ 
+ fn screenshot_to(stage: &mut crate::resources::Stage<'_>, path: &str) -> Result<Value, String> {
+     write_screenshot(stage.queues, path);
+-    Ok(json!({ "writing": path }))
++    Ok(json!({ "queued": true, "writing": path }))
+ }
+ 
+ fn write_screenshot(queues: &mut CommandQueues, path: &str) {
+@@ -619,3 +745,83 @@
+         "skins": scene.skins.len(),
+     }))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn protocol_rejects_invalid_calls_without_queueing() {
++        let queue = AgentChannel::default();
++        for (body, code) in [
++            ("{", -32700),
++            (r#"{"id":1,"method":"tools/list"}"#, -32600),
++            (
++                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"missing"}}"#,
++                -32602,
++            ),
++            (
++                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"undo","arguments":[]}}"#,
++                -32602,
++            ),
++        ] {
++            assert_eq!(answer_message(&queue, body).unwrap()["error"]["code"], code);
++        }
++        assert!(
++            answer_message(
++                &queue,
++                r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"undo"}}"#
++            )
++            .is_none()
++        );
++        assert!(take_pending(&queue).is_empty());
++    }
++
++    #[test]
++    fn execution_errors_and_success_have_distinct_envelopes() {
++        for (reply, expected) in [
++            (Err("invalid entity".to_string()), true),
++            (Ok(json!({"queued":true})), false),
++        ] {
++            let queue = AgentChannel::default();
++            let client_queue = queue.clone();
++            let client = std::thread::spawn(move || {
++                queue_call(&client_queue, Some(json!(7)), json!({"name":"undo"}))
++            });
++            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
++            let pending = loop {
++                if let Some(call) = take_pending(&queue).pop() {
++                    break call;
++                }
++                assert!(std::time::Instant::now() < deadline);
++                std::thread::yield_now();
++            };
++            pending.reply.send(reply).unwrap();
++            let result = client.join().unwrap();
++            assert_eq!(result["id"], 7);
++            assert_eq!(result["result"]["isError"], expected);
++            let text: Value =
++                serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap())
++                    .unwrap();
++            assert_eq!(text, result["result"]["structuredContent"]);
++        }
++    }
++
++    #[test]
++    fn expired_calls_are_discarded_and_queue_is_bounded() {
++        let queue = AgentChannel::default();
++        let make = |deadline| Pending {
++            name: "undo".into(),
++            arguments: json!({}),
++            reply: channel().0,
++            deadline,
++        };
++        queue_pending(&queue, make(std::time::Instant::now())).unwrap();
++        assert!(take_pending(&queue).is_empty());
++        for _ in 0..MAX_PENDING_CALLS {
++            queue_pending(&queue, make(std::time::Instant::now() + CALL_TIMEOUT)).unwrap();
++        }
++        assert!(queue_pending(&queue, make(std::time::Instant::now() + CALL_TIMEOUT)).is_err());
++        assert_eq!(take_pending(&queue).len(), MAX_PENDING_CALLS);
++    }
++}
+diff --git a/apps/viewer/src/commands/material.rs b/apps/viewer/src/commands/material.rs
+--- a/apps/viewer/src/commands/material.rs
++++ b/apps/viewer/src/commands/material.rs
+@@ -8,24 +8,39 @@
+ use crate::resources::{Edit, MaterialView, ViewerResources};
+ 
+ pub fn set_material_field(stage: &mut crate::resources::Stage<'_>, field: MaterialField) {
+-    let viewer = &mut *stage.viewer;
+-    let before = viewer.selection.material_values.clone();
+-    let mut values = before.clone();
+-    let name = viewer.selection.material.clone();
+-    apply_to_view(&mut values, field.clone());
+-    if let Some(name) = name {
+-        write_field(stage.materials, &name, field);
+-        let viewer = &mut *stage.viewer;
++    if let Some(name) = stage.viewer.selection.material.clone() {
++        let _ = edit_material(stage, &name, vec![field]);
++    }
++}
++
++/// Targeted registry mutation shared by UI and MCP, including clamping/history.
++pub fn edit_material(
++    stage: &mut crate::resources::Stage<'_>,
++    name: &str,
++    fields: Vec<MaterialField>,
++) -> Result<(), String> {
++    let before = crate::queries::material::view_by_name(stage.materials, name)
++        .ok_or("that material is not registered")?;
++    for field in fields {
++        write_field(stage.materials, name, field);
++    }
++    let after = crate::queries::material::view_by_name(stage.materials, name)
++        .ok_or("that material is not registered")?;
++    if before != after {
+         push(
+-            &mut viewer.history,
++            &mut stage.viewer.history,
+             Edit::Material {
+-                name,
++                name: name.to_string(),
+                 before,
+-                after: values.clone(),
++                after: after.clone(),
+             },
+         );
+-    }
+-    stage.viewer.selection.material_values = values;
++        if stage.viewer.selection.material.as_deref() == Some(name) {
++            stage.viewer.selection.material_values = after;
++            stage.viewer.view.detail_dirty = true;
++        }
++    }
++    Ok(())
+ }
+ 
+ pub fn reset_material(stage: &mut crate::resources::Stage<'_>) {
+diff --git a/apps/viewer/src/commands/selection.rs b/apps/viewer/src/commands/selection.rs
+--- a/apps/viewer/src/commands/selection.rs
++++ b/apps/viewer/src/commands/selection.rs
+@@ -48,24 +48,58 @@
+     storage: &mut nightshade::ecs::Storage,
+     field: LightField,
+ ) {
+-    let (Some(entity), Some(before)) = (viewer.selection.selected, viewer.selection.light.clone())
+-    else {
+-        return;
+-    };
++    if let Some(entity) = viewer.selection.selected {
++        let _ = edit_light(viewer, storage, entity, vec![field]);
++    }
++}
++
++/// Apply one light edit atomically through the same history as the inspector.
++pub fn edit_light(
++    viewer: &mut ViewerResources,
++    storage: &mut nightshade::ecs::Storage,
++    entity: Entity,
++    fields: Vec<LightField>,
++) -> Result<(), String> {
++    let light = storage
++        .get_mut::<Light>(entity)
++        .ok_or("that node carries no light")?;
++    let before = light_view(light);
+     let mut after = before.clone();
+-    apply_light_field(&mut after, field);
+-    if let Some(light) = storage.get_mut::<Light>(entity) {
++    for field in fields {
++        apply_light_field(&mut after, field);
++    }
++    if after
++        .color
++        .iter()
++        .chain(
++            [
++                after.intensity,
++                after.range,
++                after.inner_cone,
++                after.outer_cone,
++            ]
++            .iter(),
++        )
++        .any(|v| !v.is_finite())
++    {
++        return Err("light values must be finite".into());
++    }
++    if before != after {
+         write_light(light, &after);
+-    }
+-    viewer.selection.light = Some(after.clone());
+-    push(
+-        &mut viewer.history,
+-        Edit::Light {
+-            entity,
+-            before,
+-            after,
+-        },
+-    );
++        if viewer.selection.selected == Some(entity) {
++            viewer.selection.light = Some(after.clone());
++            viewer.view.detail_dirty = true;
++        }
++        push(
++            &mut viewer.history,
++            Edit::Light {
++                entity,
++                before,
++                after,
++            },
++        );
++    }
++    Ok(())
+ }
+ 
+ pub fn set_camera_field(
+@@ -152,23 +186,50 @@
+     let Some(entity) = viewer.selection.selected else {
+         return;
+     };
+-    let Some(transform) = storage.get_mut::<LocalTransform>(entity) else {
+-        return;
+-    };
++    let _ = edit_transform(
++        viewer,
++        storage,
++        entity,
++        Some(viewer.selection.translation),
++        Some(viewer.selection.rotation),
++        Some(viewer.selection.scale),
++    );
++}
++
++/// Shared targeted edit path for the inspector and MCP. Does not change selection.
++pub fn edit_transform(
++    viewer: &mut ViewerResources,
++    storage: &mut nightshade::ecs::Storage,
++    entity: Entity,
++    translation: Option<[f32; 3]>,
++    rotation: Option<[f32; 3]>,
++    scale: Option<[f32; 3]>,
++) -> Result<(), String> {
++    if [translation, rotation, scale]
++        .into_iter()
++        .flatten()
++        .flatten()
++        .any(|v| !v.is_finite())
++    {
++        return Err("transform values must be finite".into());
++    }
++    let transform = storage
++        .get_mut::<LocalTransform>(entity)
++        .ok_or("that node carries no transform")?;
+     let before = snapshot(transform);
+-    transform.translation = Vec3::new(
+-        viewer.selection.translation[0],
+-        viewer.selection.translation[1],
+-        viewer.selection.translation[2],
+-    );
+-    transform.rotation = euler_to_quat(viewer.selection.rotation);
+-    transform.scale = Vec3::new(
+-        viewer.selection.scale[0],
+-        viewer.selection.scale[1],
+-        viewer.selection.scale[2],
+-    );
+-    viewer.selection.rotation_quat = transform.rotation;
++    if let Some(v) = translation {
++        transform.translation = Vec3::from(v);
++    }
++    if let Some(v) = rotation {
++        transform.rotation = euler_to_quat(v);
++    }
++    if let Some(v) = scale {
++        transform.scale = Vec3::from(v);
++    }
+     let after = snapshot(transform);
++    if viewer.selection.selected == Some(entity) {
++        read_transform(&mut viewer.selection, transform);
++    }
+     if before != after {
+         push(
+             &mut viewer.history,
+@@ -179,6 +240,7 @@
+             }]),
+         );
+     }
++    Ok(())
+ }
+ 
+ pub fn restore_transform(
+diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
+--- a/apps/viewer/src/core.rs
++++ b/apps/viewer/src/core.rs
+@@ -274,7 +274,7 @@
+             sync::mpsc,
+             time::{Duration, Instant},
+         };
+-        fn call(port: u16, name: &str, arguments: Value) -> Value {
++        fn raw_call(port: u16, name: &str, arguments: Value) -> Value {
+             let body=json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string();
+             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+             stream
+@@ -286,7 +286,12 @@
+             let (_, body) = response.split_once("\r\n\r\n").unwrap();
+             let response: Value = serde_json::from_str(body).unwrap();
+             assert!(response.get("error").is_none(), "{response}");
+-            response["result"]["structuredContent"].clone()
++            response["result"].clone()
++        }
++        fn call(port: u16, name: &str, arguments: Value) -> Value {
++            let result = raw_call(port, name, arguments);
++            assert_eq!(result["isError"], false, "{result}");
++            result["structuredContent"].clone()
+         }
+         let reservation = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+         let port = reservation.local_addr().unwrap().port();
+@@ -335,7 +340,64 @@
+                 "set_transform",
+                 json!({"entity":entity.id,"translation":[5.,2.,1.]}),
+             );
++            let edited = call(port, "get_transform", json!({"entity":entity.id}));
++            assert_eq!(edited["translation"], json!([5., 2., 1.]));
++            call(port, "undo", json!({}));
++            let undone = call(port, "get_transform", json!({"entity":entity.id}));
++            assert_ne!(undone["translation"], edited["translation"]);
++            call(port, "redo", json!({}));
+             let transform = call(port, "get_transform", json!({"entity":entity.id}));
++            for (name, args) in [
++                ("get_transform", json!({"entity":entity.id,"typo":true})),
++                (
++                    "set_transform",
++                    json!({"entity":entity.id,"scale":[1e100,1,1]}),
++                ),
++                ("play_clip", json!({"index":99999})),
++                (
++                    "set_animation_layer_weight",
++                    json!({"index":0,"weight":0.5}),
++                ),
++                ("get_morph_weights", json!({"entity":entity.id})),
++                ("undo", json!({"typo":true})),
++            ] {
++                assert_eq!(raw_call(port, name, args)["isError"], true, "{name}");
++            }
++            let material = call(port, "get_material", json!({"entity":entity.id}));
++            let changed = call(
++                port,
++                "set_material",
++                json!({"entity":entity.id,"roughness":0.27,"metallic":0.42}),
++            );
++            assert!((changed["roughness"].as_f64().unwrap() - 0.27).abs() < 1e-6);
++            call(port, "undo", json!({}));
++            assert_eq!(
++                call(port, "get_material", json!({"entity":entity.id})),
++                material
++            );
++            call(port, "redo", json!({}));
++            assert_eq!(
++                call(port, "get_material", json!({"entity":entity.id})),
++                changed
++            );
++            call(port, "add_light", json!({"kind":"spot"}));
++            let light = call(port, "get_selection", json!({}))["entity"].clone();
++            let before = call(port, "get_light", json!({"entity":light}));
++            call(port, "select_entity", json!({"entity":entity.id}));
++            let changed = call(
++                port,
++                "set_light",
++                json!({"entity":light,"intensity":42.0,"color":[0.2,0.4,0.8]}),
++            );
++            assert_eq!(changed["intensity"], 42.0);
++            assert_eq!(call(port, "get_selection", json!({}))["entity"], entity.id);
++            call(port, "undo", json!({}));
++            assert_eq!(call(port, "get_light", json!({"entity":light})), before);
++            call(port, "redo", json!({}));
++            assert_eq!(call(port, "get_light", json!({"entity":light})), changed);
++            call(port, "set_animation", json!({"blend_time":0.7}));
++            let animation = call(port, "get_animation", json!({}));
++            assert!((animation["blend_time"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+             sender.send(transform).unwrap();
+         });
+         let deadline = Instant::now() + Duration::from_secs(10);
+diff --git a/apps/viewer/src/data.rs b/apps/viewer/src/data.rs
+--- a/apps/viewer/src/data.rs
++++ b/apps/viewer/src/data.rs
+@@ -585,22 +585,26 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct Empty {}
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct EntityArgs {
+     pub entity: u32,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct SelectArgs {
+     pub entity: Option<u32>,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct TransformArgs {
+     pub entity: u32,
+     pub translation: Option<[f32; 3]>,
+@@ -610,6 +614,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct MaterialArgs {
+     pub entity: u32,
+     pub base_color: Option<[f32; 4]>,
+@@ -628,30 +633,35 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct PrimitiveArgs {
+     pub kind: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct LightArgs {
+     pub kind: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct PathArgs {
+     pub path: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct NameArgs {
+     pub name: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct SlugArgs {
+     pub slug: String,
+     pub resolution: Option<u32>,
+@@ -659,6 +669,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct ClipArgs {
+     pub index: usize,
+     pub blend_time: Option<f32>,
+@@ -666,6 +677,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct LayerArgs {
+     pub index: usize,
+     pub weight: Option<f32>,
+@@ -673,12 +685,41 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct AnimationArgs {
++    pub time: Option<f32>,
++    pub speed: Option<f32>,
++    pub looping: Option<bool>,
++    pub blend_time: Option<f32>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct LayerWeightArgs {
++    pub index: usize,
++    pub weight: f32,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct MorphWeightArgs {
++    pub entity: u32,
++    pub index: usize,
++    pub weight: f32,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct GizmoArgs {
+     pub mode: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct RenderArgs {
+     pub exposure: Option<f32>,
+     pub tonemap: Option<usize>,
+@@ -707,6 +748,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct VisibleArgs {
+     pub entity: u32,
+     pub visible: bool,
+@@ -714,6 +756,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct RenameArgs {
+     pub entity: u32,
+     pub name: String,
+@@ -721,6 +764,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct LightWriteArgs {
+     pub entity: u32,
+     pub color: Option<[f32; 3]>,
+@@ -733,6 +777,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct PageArgs {
+     pub tab: String,
+     pub search: Option<String>,
+@@ -741,18 +786,21 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct ScreenshotArgs {
+     pub path: Option<String>,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct ExportArgs {
+     pub path: Option<String>,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct CameraArgs {
+     pub entity: Option<u32>,
+ }
+diff --git a/apps/viewer/src/queries/agent.rs b/apps/viewer/src/queries/agent.rs
+--- a/apps/viewer/src/queries/agent.rs
++++ b/apps/viewer/src/queries/agent.rs
+@@ -4,10 +4,11 @@
+ use serde_json::{Value, json};
+ 
+ use crate::data::{
+-    ALPHA_LABELS, BrowserTab, CameraArgs, ClipArgs, Empty, EntityArgs, ExportArgs, GizmoArgs,
+-    GizmoMode, LIGHT_KIND_LABELS, LayerArgs, LightArgs, LightKind, LightWriteArgs, MaterialArgs,
+-    NameArgs, PageArgs, PathArgs, PrimitiveArgs, PrimitiveKind, RenameArgs, RenderArgs, RowKind,
+-    ScreenshotArgs, SelectArgs, SlugArgs, TransformArgs, VisibleArgs,
++    ALPHA_LABELS, AnimationArgs, BrowserTab, CameraArgs, ClipArgs, Empty, EntityArgs, ExportArgs,
++    GizmoArgs, GizmoMode, LIGHT_KIND_LABELS, LayerArgs, LayerWeightArgs, LightArgs, LightKind,
++    LightWriteArgs, MaterialArgs, MorphWeightArgs, NameArgs, PageArgs, PathArgs, PrimitiveArgs,
++    PrimitiveKind, RenameArgs, RenderArgs, RowKind, ScreenshotArgs, SelectArgs, SlugArgs,
++    TransformArgs, VisibleArgs,
+ };
+ use crate::queries::material::view_by_name;
+ use crate::queries::picking::find_entity_by_id;
+@@ -122,6 +123,11 @@
+             "get_animation",
+             "Read the clips, which one is playing, and the layers over it.",
+         ),
++        tool::<Empty>("toggle_playback", "Pause or resume animation playback."),
++        tool::<AnimationArgs>("set_animation", "Queue animation time, speed, looping, or blend duration changes."),
++        tool::<LayerWeightArgs>("set_animation_layer_weight", "Set a layer weight between zero and one."),
++        tool::<EntityArgs>("get_morph_weights", "Read the morph weights carried by a node."),
++        tool::<MorphWeightArgs>("set_morph_weight", "Queue a morph weight between zero and one."),
+         tool::<ClipArgs>(
+             "play_clip",
+             "Play a clip, blending into it over the time given.",
+@@ -154,15 +160,32 @@
+             "frame_model",
+             "Move the camera until the whole model is in view.",
+         ),
+-    ]
+-}
+-
+-pub fn take_arguments<T: DeserializeOwned + Default>(arguments: Value) -> Result<T, String> {
+-    if arguments.is_null() {
+-        return Ok(T::default());
+-    }
+-    serde_json::from_value(arguments)
+-        .map_err(|error| format!("those arguments do not fit: {error}"))
++    ].into_iter().map(|mut tool| {
++        tool["inputSchema"]["additionalProperties"] = json!(false);
++        tool
++    }).collect()
++}
++
++pub fn take_arguments<T: DeserializeOwned>(arguments: Value) -> Result<T, String> {
++    fn representable(value: &Value) -> bool {
++        match value {
++            Value::Number(n) => n
++                .as_f64()
++                .is_some_and(|n| n.is_finite() && n.abs() <= f32::MAX as f64),
++            Value::Array(items) => items.iter().all(representable),
++            Value::Object(fields) => fields.values().all(representable),
++            _ => true,
++        }
++    }
++    if !representable(&arguments) {
++        return Err("numeric arguments must fit finite 32-bit values".into());
++    }
++    serde_json::from_value(if arguments.is_null() {
++        json!({})
++    } else {
++        arguments
++    })
++    .map_err(|error| format!("those arguments do not fit: {error}"))
+ }
+ 
+ pub fn resolve(storage: &nightshade::ecs::Storage, id: u32) -> Result<Entity, String> {
+@@ -450,3 +473,30 @@
+         _ => Err("the tab must be library, khronos, models, or skies".to_string()),
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn argument_contract_rejects_missing_unknown_and_overflowing_values() {
++        assert!(take_arguments::<EntityArgs>(Value::Null).is_err());
++        assert!(take_arguments::<EntityArgs>(json!({"entity":1,"typo":2})).is_err());
++        assert!(take_arguments::<TransformArgs>(json!({"entity":1,"scale":[1e100,1,1]})).is_err());
++        assert!(take_arguments::<LayerWeightArgs>(json!({"index":0})).is_err());
++        assert!(take_arguments::<Empty>(json!({"typo":1})).is_err());
++        let tools = tool_list();
++        for tool in &tools {
++            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
++        }
++        for name in [
++            "set_animation",
++            "toggle_playback",
++            "set_animation_layer_weight",
++            "get_morph_weights",
++            "set_morph_weight",
++        ] {
++            assert!(tools.iter().any(|tool| tool["name"] == name));
++        }
++    }
++}
+diff --git a/apps/viewer/src/resources.rs b/apps/viewer/src/resources.rs
+--- a/apps/viewer/src/resources.rs
++++ b/apps/viewer/src/resources.rs
+@@ -1008,7 +1008,8 @@
+ pub struct Pending {
+     pub name: String,
+     pub arguments: serde_json::Value,
+-    pub reply: std::sync::mpsc::Sender<serde_json::Value>,
++    pub reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
++    pub deadline: std::time::Instant,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+diff --git a/apps/viewer/src/systems/agent.rs b/apps/viewer/src/systems/agent.rs
+--- a/apps/viewer/src/systems/agent.rs
++++ b/apps/viewer/src/systems/agent.rs
+@@ -1,5 +1,3 @@
+-use serde_json::json;
+-
+ use crate::commands::agent::{answer_call, take_pending};
+ use crate::resources::AgentChannel;
+ 
+@@ -11,11 +9,7 @@
+     let channel = channel.clone();
+     for pending in take_pending(&channel) {
+         let answer = answer_call(&mut stage, storage, &pending.name, pending.arguments);
+-        let value = match answer {
+-            Ok(value) => value,
+-            Err(message) => json!({ "error": message }),
+-        };
+-        if pending.reply.send(value).is_err() {
++        if pending.reply.send(answer).is_err() {
+             continue;
+         }
+     }
