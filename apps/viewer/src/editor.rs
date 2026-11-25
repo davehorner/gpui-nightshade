@@ -1,4 +1,5 @@
 mod animation;
+mod commands;
 mod docking;
 mod file_drop;
 mod gpu_validation;
@@ -845,6 +846,11 @@ impl Render for Editor {
                 }
                 cx.stop_propagation();
             }))
+            .on_action(
+                cx.listener(|view, _: &commands::OpenCommandPalette, window, cx| {
+                    view.open_commands(window, cx);
+                }),
+            )
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if view
                     .fields
@@ -865,7 +871,18 @@ impl Render for Editor {
                     ("z", true) if modifiers.shift => Some(Action::Redo),
                     ("z", true) => Some(Action::Undo),
                     ("y", true) => Some(Action::Redo),
+                    ("s", true) if modifiers.shift => Some(Action::ExportModel),
+                    ("s", true) => Some(Action::Screenshot),
                     ("f", false) => Some(Action::FrameModel),
+                    ("w", false) => Some(Action::SetGizmoMode(GizmoMode::Move)),
+                    ("e", false) => Some(Action::SetGizmoMode(GizmoMode::Rotate)),
+                    ("r", false) => Some(Action::SetGizmoMode(GizmoMode::Scale)),
+                    ("delete" | "x", false) => Some(Action::DeleteSelected),
+                    ("space", false)
+                        if view.snapshot.as_ref().is_some_and(|s| !s.clips.is_empty()) =>
+                    {
+                        Some(Action::TogglePlayback)
+                    }
                     _ => None,
                 };
                 if let Some(action) = action {
@@ -881,16 +898,14 @@ impl Render for Editor {
                     .items_center()
                     .flex_wrap()
                     .child("NIGHTSHADE")
+                    .child(Button::new("commands").label("Commands").on_click(
+                        cx.listener(|view, _, window, cx| view.open_commands(window, cx)),
+                    ))
                     .child(
                         Button::new("save-layout")
                             .label("Save layout")
                             .on_click(cx.listener(|view, _, _, cx| {
-                                view.message = match view.dock.save(cx) {
-                                    Ok(true) => "Layout saved".into(),
-                                    Ok(false) => "Layout persistence is disabled".into(),
-                                    Err(error) => format!("Could not save layout: {error}"),
-                                };
-                                cx.notify();
+                                view.save_layout(cx);
                             })),
                     )
                     .child(
@@ -1036,6 +1051,15 @@ pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            #[cfg(target_os = "macos")]
+            let shortcut = "cmd-shift-p";
+            #[cfg(not(target_os = "macos"))]
+            let shortcut = "ctrl-shift-p";
+            cx.bind_keys([KeyBinding::new(
+                shortcut,
+                commands::OpenCommandPalette,
+                Some("NightshadeEditor"),
+            )]);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
             let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
             gpui_kit::open_window(

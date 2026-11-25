@@ -4,6 +4,8 @@ The default executable now runs the trunk viewer core inside the GPUI-owned wind
 
 Implemented this milestone:
 
+- Searchable GPUI command palette routes existing viewer actions with current-state enablement/confirmation, and exposes all primitive/light types plus scene, animation, asset and output tools. Trunk gizmo/playback/output shortcuts were added while preserving inspector typing. Native shared-mode checks confirmed palette sphere creation through MCP and gizmo selection.
+
 - Reusable viewport inspection API with actual transport/adapter, effective visibility, fallback/error and metadata tied to the retained image. Shared pending frames preserve producer identity; unused parallel GPU-frame abstractions were removed. See [embedding API](integration.md).
 
 - `ViewerCorePlugin` and `NativeViewerUiPlugin`, with the original `ViewerPlugin` composing both. Core startup and update schedules run without a retained UI runtime.
