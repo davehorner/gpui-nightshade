@@ -128,6 +128,10 @@ impl Worker {
             self.shared.1.notify_one();
         }
     }
+    pub fn camera_layout(&self) -> (gpui_nightshade::views::CameraLayout, usize) {
+        let request = self.shared.0.lock().unwrap().request;
+        (request.layout, request.active_view)
+    }
     pub fn set_visible(&self, visible: bool) {
         let mut state = self.shared.0.lock().unwrap();
         if state.status.visible != visible {
@@ -233,6 +237,55 @@ impl Transport {
         }
     }
 }
+fn sync_camera_layout(
+    shared: &Arc<(Mutex<State>, Condvar)>,
+    actual: Option<(gpui_nightshade::views::CameraLayout, usize)>,
+    revision: u64,
+    anchors: &[[f32; 6]; 4],
+) {
+    let mut state = shared.0.lock().unwrap();
+    let current_revision = state.revision;
+    if merge_camera_layout(
+        &mut state.request,
+        current_revision,
+        revision,
+        actual,
+        anchors,
+    ) {
+        state.revision += 1;
+        state.changed = true;
+    }
+}
+
+fn merge_camera_layout(
+    request: &mut ViewRequest,
+    current_revision: u64,
+    rendered_revision: u64,
+    actual: Option<(gpui_nightshade::views::CameraLayout, usize)>,
+    anchors: &[[f32; 6]; 4],
+) -> bool {
+    let Some((layout, active)) = actual else {
+        return false;
+    };
+    let Some(anchor) = anchors.get(active) else {
+        return false;
+    };
+    // A newer frontend event wins over feedback from an older rendered request.
+    if current_revision != rendered_revision
+        || (request.layout, request.active_view) == (layout, active)
+    {
+        return false;
+    }
+    request.layout = layout;
+    request.active_view = active;
+    request.yaw = anchor[0];
+    request.pitch = anchor[1];
+    request.distance = anchor[2];
+    request.target = [anchor[3], anchor[4], anchor[5]];
+    request.pick = None;
+    true
+}
+
 fn run(
     shared: &Arc<(Mutex<State>, Condvar)>,
     factory: &crate::SceneFactory,
@@ -290,6 +343,8 @@ fn run(
     let mut pick_sequence = None;
     let mut pick_pending = false;
     let mut last_camera = None;
+    let mut last_layout = None;
+    let mut camera_anchors = [[0.6, 0.35, 4., 0., 0., 0.]; 4];
     #[cfg(target_os = "windows")]
     let mut retired_shared: Vec<crate::windows::SharedRing> = Vec::new();
     let trace_gpu = std::env::var_os("GPUI_NIGHTSHADE_TRACE_GPU").is_some();
@@ -343,11 +398,29 @@ fn run(
             eprintln!("Shared GPU visibility: visible={visible}");
             last_visible = visible;
         }
+        camera_anchors[request.active_view] = [
+            request.yaw,
+            request.pitch,
+            request.distance,
+            request.target[0],
+            request.target[1],
+            request.target[2],
+        ];
+        if last_layout != Some((request.layout, request.active_view)) {
+            host.set_camera_layout(request.layout, request.active_view)?;
+            last_layout = Some((request.layout, request.active_view));
+        }
         if !visible {
             if let Some(event) = shared.0.lock().unwrap().input.pop() {
                 host.pointer_input(event);
             }
             host.service_hidden()?;
+            sync_camera_layout(
+                shared,
+                host.camera_layout_state(),
+                revision,
+                &camera_anchors,
+            );
             // Finish outstanding copies without allocating/publishing new UI images.
             host.renderer().device.poll(wgpu::PollType::Poll)?;
             if let Transport::Readback(ring) = &mut transport {
@@ -440,7 +513,6 @@ fn run(
                 distance: request.distance,
                 target: request.target,
             };
-            host.set_camera_layout(request.layout, request.active_view)?;
             if last_camera != Some((camera, request.active_view)) {
                 host.set_camera(camera);
                 last_camera = Some((camera, request.active_view));
@@ -456,6 +528,12 @@ fn run(
                 host.pointer_input(event);
             }
             host.render()?;
+            sync_camera_layout(
+                shared,
+                host.camera_layout_state(),
+                revision,
+                &camera_anchors,
+            );
             shared.0.lock().unwrap().rendered_frames += 1;
             let source = host.renderer().external_output.as_ref().unwrap();
             match &mut transport {
@@ -578,6 +656,36 @@ mod tests {
     use gpui_nightshade::host::{CameraPose, SceneHost, ViewportHost, WgpuRenderer};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
+
+    #[test]
+    fn remote_layout_feedback_preserves_newer_input_and_per_view_camera_anchors() {
+        use gpui_nightshade::views::CameraLayout;
+        let mut request = ViewRequest {
+            layout: CameraLayout::Single,
+            active_view: 0,
+            width: 800,
+            height: 600,
+            yaw: 0.2,
+            pitch: 0.3,
+            distance: 5.,
+            target: [1., 2., 3.],
+            pick: Some((10, 20, 1)),
+        };
+        let anchors = [[0.8, 0.9, 7., 4., 5., 6.]; 4];
+        let actual = Some((CameraLayout::Quad, 3));
+        assert!(!merge_camera_layout(&mut request, 2, 1, actual, &anchors));
+        assert_eq!(request.active_view, 0);
+        assert!(request.pick.is_some());
+        assert!(merge_camera_layout(&mut request, 2, 2, actual, &anchors));
+        assert_eq!(
+            (request.layout, request.active_view),
+            (CameraLayout::Quad, 3)
+        );
+        assert_eq!(request.yaw, 0.8);
+        assert_eq!(request.target, [4., 5., 6.]);
+        assert_eq!(request.pick, None);
+        assert!(!merge_camera_layout(&mut request, 2, 2, actual, &anchors));
+    }
 
     struct ContinuousHost(SceneHost);
     impl ViewportHost for ContinuousHost {

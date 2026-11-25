@@ -34,6 +34,31 @@ The response includes an `operation_id`. Use it in:
 
 The cinematic client's `call_applied` helper performs this bounded wait for tracked scene actions. Native clip setup and pause use it; loading still uses the existing scene readiness checks. Continuous morph and camera updates can continue using `call` when no completion wait is needed.
 
+## Shared camera tiles
+
+`get_camera_views` reports whether the frontend supports shared tiles, the requested layout count, zero-based active tile, physical output dimensions, and enabled tiles with camera entity IDs and pixel rectangles. The GPUI editor publishes its actual shared scene cameras; the original native frontend reports `supported: false` and rejects tile mutations.
+
+| Tool | Arguments | Behavior |
+| --- | --- | --- |
+| `get_camera_views` | `{}` | Read actual shared camera layout and assignments. |
+| `set_camera_views` | `count`: 1, 2 or 4; optional `active` | Change the tile layout. Omitted active preserves focus where possible, clamping when shrinking. |
+| `focus_camera_view` | `index` | Focus a visible tile for navigation, existing `frame_model` and `set_active_camera` actions. |
+| `set_view_camera` | `index`; optional `entity` | Assign an existing camera. Omit entity for the persistent editor camera. Reusing a managed camera swaps its two assignments. |
+
+Mutations return operation IDs. Their retained result is the actual camera layout after frontend application, with the existing `scene_actions_applied` boundary. Wait for layout application before requesting an index that only exists in the new layout. Invalid counts, indices and non-camera targets are tool errors. Targets that disappear before application fail the operation; imported cameras destroyed by model replacement are repaired with independent editor cameras.
+
+MCP changes synchronize back into the viewport's tile labels and input focus. A newer frontend event takes precedence over feedback from an older worker request. Per-view input anchors prevent a remote focus change from applying another camera's orbit delta. Layout changes also work while the panel/window is hidden. At tiny output sizes the enabled tile list can be shorter than the requested count; indices must refer to an enabled tile.
+
+```python
+views = client.call_applied("set_camera_views", count=4, active=0)["result"]
+client.call_applied("focus_camera_view", index=2)
+client.call_applied("frame_model")
+client.call_applied("set_view_camera", index=1, entity=views["tiles"][0]["camera"])
+print(client.call("get_camera_views"))
+```
+
+These tools control tiles within the existing shared scene panel. Per-view screenshot selection, explicit camera lens/orbit tools and independently dockable camera panels remain unfinished. Existing `get_transform`/`set_transform` can address camera entities; native orbit controllers and animation can subsequently update their transforms.
+
 ## Additional tools
 
 | Tool | Arguments | Behavior |

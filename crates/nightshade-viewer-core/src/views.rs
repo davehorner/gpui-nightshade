@@ -24,7 +24,7 @@ impl SharedViews {
         }
         self.layout = layout;
         self.active = active;
-        if !self.cameras[0].is_some_and(|e| world.storage.is_alive(e)) {
+        if self.cameras.iter().all(Option::is_none) {
             self.cameras[0] = viewer::core::editor_camera(world)
                 .filter(|e| world.storage.is_alive(*e))
                 .or(world.res::<ActiveCamera>().0);
@@ -36,7 +36,19 @@ impl SharedViews {
     }
 
     fn ensure_cameras(&mut self, world: &mut World, count: usize) {
-        let Some(primary) = self.cameras[0] else {
+        let Some(primary) = self
+            .cameras
+            .iter()
+            .flatten()
+            .copied()
+            .find(|e| {
+                world.storage.is_alive(*e)
+                    && world
+                        .storage
+                        .has::<nightshade_camera::components::Camera>(*e)
+            })
+            .or_else(|| viewer::core::editor_camera(world))
+        else {
             return;
         };
         let camera = world
@@ -49,8 +61,13 @@ impl SharedViews {
             .get::<PanOrbitCamera>(primary)
             .copied()
             .unwrap_or_default();
-        for (i, slot) in self.cameras.iter_mut().enumerate().take(count).skip(1) {
-            if slot.is_some_and(|e| world.storage.is_alive(e)) {
+        for (i, slot) in self.cameras.iter_mut().enumerate().take(count) {
+            if slot.is_some_and(|e| {
+                world.storage.is_alive(e)
+                    && world
+                        .storage
+                        .has::<nightshade_camera::components::Camera>(e)
+            }) {
                 continue;
             }
             let mut orbit = base;
@@ -69,6 +86,7 @@ impl SharedViews {
                 GlobalTransform::default(),
                 Name(format!("Editor camera {}", i + 1)),
             )));
+            self.poses[i] = None;
         }
     }
 
@@ -85,6 +103,8 @@ impl SharedViews {
             }
             self.poses[self.active] = None;
         }
+        self.ensure_cameras(world, self.layout.rects(self.width, self.height).len());
+        world.res_mut::<ActiveCamera>().0 = self.cameras[self.active];
         // Expose managed camera IDs through the existing camera snapshot/MCP tool.
         for (i, entity) in self.cameras.iter().enumerate() {
             if let Some(entity) = entity {
@@ -96,6 +116,108 @@ impl SharedViews {
             }
         }
         self.publish_layout(world);
+        self.publish_state(world);
+    }
+
+    pub fn apply_requests(&mut self, world: &mut World) {
+        for request in viewer::core::take_camera_view_requests(world) {
+            let result = self.apply_request(world, request.command);
+            self.after_scene(world);
+            viewer::core::finish_camera_view_request(world, &request.operation_id, result);
+        }
+    }
+
+    fn apply_request(
+        &mut self,
+        world: &mut World,
+        command: viewer::core::CameraViewCommand,
+    ) -> Result<(), String> {
+        use viewer::core::CameraViewCommand;
+        match command {
+            CameraViewCommand::Layout { count, active } => {
+                let layout = match count {
+                    1 => CameraLayout::Single,
+                    2 => CameraLayout::Split,
+                    4 => CameraLayout::Quad,
+                    _ => return Err("camera count must be 1, 2 or 4".into()),
+                };
+                let visible = layout.rects(self.width, self.height).len();
+                if active.is_some_and(|i| i >= visible) {
+                    return Err("active tile is unavailable at this output size".into());
+                }
+                self.configure(
+                    world,
+                    layout,
+                    active.unwrap_or(self.active.min(visible - 1)),
+                );
+            }
+            CameraViewCommand::Focus { index } => {
+                self.check_index(index)?;
+                self.configure(world, self.layout, index);
+            }
+            CameraViewCommand::Assign { index, camera } => {
+                self.check_index(index)?;
+                let camera = camera
+                    .or_else(|| viewer::core::editor_camera(world))
+                    .ok_or("the editor camera is unavailable")?;
+                if !world.storage.is_alive(camera)
+                    || !world
+                        .storage
+                        .has::<nightshade_camera::components::Camera>(camera)
+                {
+                    return Err("the camera target no longer exists".into());
+                }
+                viewer::core::cancel_pointer_gesture(world);
+                if let Some(other) = self.cameras.iter().position(|e| *e == Some(camera)) {
+                    self.cameras.swap(index, other);
+                    self.poses[other] = None;
+                } else {
+                    self.cameras[index] = Some(camera);
+                }
+                self.poses[index] = None;
+                world.res_mut::<ActiveCamera>().0 = self.cameras[self.active];
+            }
+        }
+        Ok(())
+    }
+
+    fn check_index(&self, index: usize) -> Result<(), String> {
+        if index >= self.layout.rects(self.width, self.height).len() {
+            return Err("there is no visible tile at that index".into());
+        }
+        Ok(())
+    }
+
+    fn publish_state(&self, world: &mut World) {
+        let count = match self.layout {
+            CameraLayout::Single => 1,
+            CameraLayout::Split => 2,
+            CameraLayout::Quad => 4,
+        };
+        let tiles = self
+            .layout
+            .rects(self.width, self.height)
+            .iter()
+            .enumerate()
+            .filter_map(|(index, r)| {
+                self.cameras[index].map(|camera| viewer::core::CameraTile {
+                    index,
+                    camera,
+                    rect: [r.x, r.y, r.width, r.height],
+                })
+            })
+            .collect();
+        viewer::core::publish_camera_views(
+            world,
+            viewer::core::CameraViews {
+                supported: true,
+                count,
+                active: self.active,
+                width: self.width,
+                height: self.height,
+                tiles,
+            },
+        );
     }
 
     pub fn publish_layout(&self, world: &mut World) {
@@ -134,6 +256,134 @@ impl SharedViews {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_camera_commands_share_state_swap_assignments_and_reject_stale_targets() {
+        use viewer::core::CameraViewCommand as Command;
+        let mut app = viewer::core::compose(
+            viewer::core::ViewerArguments {
+                no_agent: true,
+                preview: true,
+                ..Default::default()
+            },
+            viewer::core::ViewerCorePlugin {
+                persist_settings: false,
+                remote_catalogs: false,
+            },
+        );
+        app.stages.apply_orderings();
+        app.startup.run(&mut app.world);
+        let mut views = SharedViews {
+            width: 801,
+            height: 601,
+            ..Default::default()
+        };
+        views
+            .apply_request(
+                &mut app.world,
+                Command::Layout {
+                    count: 4,
+                    active: Some(2),
+                },
+            )
+            .unwrap();
+        views.after_scene(&mut app.world);
+        let initial = viewer::core::camera_views(&app.world);
+        assert_eq!(initial.tiles.len(), 4);
+        assert_eq!(initial.active, 2);
+        let cameras = views.cameras;
+        views
+            .apply_request(
+                &mut app.world,
+                Command::Assign {
+                    index: 2,
+                    camera: cameras[0],
+                },
+            )
+            .unwrap();
+        views.after_scene(&mut app.world);
+        assert_eq!(views.cameras[2], cameras[0]);
+        assert_eq!(views.cameras[0], cameras[2]);
+        assert_eq!(app.world.res::<ActiveCamera>().0, cameras[0]);
+        let imported = app.world.storage.spawn((
+            nightshade_camera::components::Camera::default(),
+            LocalTransform::default(),
+            GlobalTransform::default(),
+        ));
+        app.world.storage.despawn_entities(&[imported]);
+        // A model-owned camera may disappear when another model is loaded.
+        let imported_live = app.world.storage.spawn((
+            nightshade_camera::components::Camera::default(),
+            LocalTransform::default(),
+            GlobalTransform::default(),
+        ));
+        views
+            .apply_request(
+                &mut app.world,
+                Command::Assign {
+                    index: 0,
+                    camera: Some(imported_live),
+                },
+            )
+            .unwrap();
+        app.world.storage.despawn_entities(&[imported_live]);
+        views.after_scene(&mut app.world);
+        let repaired = viewer::core::camera_views(&app.world);
+        assert!(
+            repaired
+                .tiles
+                .iter()
+                .all(|t| app.world.storage.is_alive(t.camera))
+        );
+        assert_eq!(
+            repaired
+                .tiles
+                .iter()
+                .map(|t| t.camera)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
+        let before = views.cameras;
+        assert!(
+            views
+                .apply_request(
+                    &mut app.world,
+                    Command::Assign {
+                        index: 1,
+                        camera: Some(imported)
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(views.cameras, before);
+        views
+            .apply_request(
+                &mut app.world,
+                Command::Layout {
+                    count: 2,
+                    active: None,
+                },
+            )
+            .unwrap();
+        views
+            .apply_request(&mut app.world, Command::Focus { index: 1 })
+            .unwrap();
+        views.after_scene(&mut app.world);
+        let current = viewer::core::camera_views(&app.world);
+        assert_eq!(current.tiles.len(), 2);
+        assert_eq!(current.active, 1);
+        assert_eq!(current.tiles[1].rect, [400, 0, 401, 601]);
+        assert_eq!(
+            initial.tiles.len(),
+            4,
+            "snapshots retain their original layout"
+        );
+        assert!(
+            views
+                .apply_request(&mut app.world, Command::Focus { index: 3 })
+                .is_err()
+        );
+    }
     #[test]
     fn four_cameras_share_one_scene_and_survive_focus_and_layout_changes() {
         let mut app = viewer::core::compose(

@@ -1,0 +1,261 @@
+--- a/apps/viewer/src/lib.rs
++++ b/apps/viewer/src/lib.rs
+@@ -1,5 +1,6 @@
+ #[cfg(not(target_arch = "wasm32"))]
+ mod operations;
++mod camera_views;
+ pub mod core;
+ mod commands;
+ mod components;
+--- a/apps/viewer/src/data.rs
++++ b/apps/viewer/src/data.rs
+@@ -829,6 +829,29 @@
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
+ #[serde(deny_unknown_fields)]
++pub struct CameraViewsArgs {
++    pub count: u32,
++    pub active: Option<usize>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct CameraViewIndexArgs {
++    pub index: usize,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct ViewCameraArgs {
++    pub index: usize,
++    pub entity: Option<u32>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct CameraArgs {
+     pub entity: Option<u32>,
+ }
+--- a/apps/viewer/src/resources.rs
++++ b/apps/viewer/src/resources.rs
+@@ -999,6 +999,8 @@
+     pub animation: AnimationView,
+     #[cfg(not(target_arch = "wasm32"))]
+     pub operations: crate::operations::Operations,
++    pub camera_views: crate::camera_views::CameraViews,
++    pub camera_view_requests: Vec<crate::camera_views::CameraViewRequest>,
+     pub actions: Vec<ViewerAction>,
+     pub handles: UiHandles,
+     pub layout: Layout,
+--- a/apps/viewer/src/commands/agent.rs
++++ b/apps/viewer/src/commands/agent.rs
+@@ -275,6 +275,41 @@
+         take_arguments::<crate::data::Empty>(arguments.clone())?;
+     }
+     match name {
++        "get_camera_views" => Ok(crate::camera_views::state(&stage.viewer.camera_views)),
++        "set_camera_views" => {
++            let args: crate::data::CameraViewsArgs = take_arguments(arguments)?;
++            crate::camera_views::enqueue(
++                stage.viewer,
++                crate::camera_views::CameraViewCommand::Layout {
++                    count: args.count,
++                    active: args.active,
++                },
++                name,
++            )
++        }
++        "focus_camera_view" => {
++            let args: crate::data::CameraViewIndexArgs = take_arguments(arguments)?;
++            crate::camera_views::enqueue(
++                stage.viewer,
++                crate::camera_views::CameraViewCommand::Focus { index: args.index },
++                name,
++            )
++        }
++        "set_view_camera" => {
++            let args: crate::data::ViewCameraArgs = take_arguments(arguments)?;
++            let camera = args.entity.map(|id| resolve(storage, id)).transpose()?;
++            if camera.is_some_and(|e| !storage.has::<nightshade_camera::components::Camera>(e)) {
++                return Err("that entity is not a camera".into());
++            }
++            crate::camera_views::enqueue(
++                stage.viewer,
++                crate::camera_views::CameraViewCommand::Assign {
++                    index: args.index,
++                    camera,
++                },
++                name,
++            )
++        }
+         "get_operation" => {
+             let args: crate::data::OperationArgs = take_arguments(arguments)?;
+             if args.operation_id.len() > 128 {
+--- a/apps/viewer/src/queries/agent.rs
++++ b/apps/viewer/src/queries/agent.rs
+@@ -31,6 +31,10 @@
+ pub fn tool_list() -> Vec<Value> {
+     use enum2schema::mcp::tool;
+     vec![
++        tool::<Empty>("get_camera_views", "Read frontend shared-camera support, layout count, zero-based active tile, camera entity IDs and physical output rectangles."),
++        tool::<crate::data::CameraViewsArgs>("set_camera_views", "Set one, two or four camera tiles sharing the same scene. Optional active index is zero-based. Returns a tracked scene-application operation."),
++        tool::<crate::data::CameraViewIndexArgs>("focus_camera_view", "Focus a visible camera tile by zero-based index for navigation and framing."),
++        tool::<crate::data::ViewCameraArgs>("set_view_camera", "Assign an existing camera entity to a visible tile. Omit entity for the persistent editor camera. Reusing a camera already in another tile swaps their assignments."),
+         tool::<crate::data::OperationArgs>("get_operation", "Read queued scene-edit application status and its post-edit state. Applied means native scene actions ran, not that a GPU frame was presented. IDs expire when bounded history is evicted or the viewer restarts."),
+         tool::<Empty>(
+             "get_viewer_state",
+--- a/apps/viewer/src/core.rs
++++ b/apps/viewer/src/core.rs
+@@ -1,4 +1,10 @@
+ //! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
++#[cfg(not(target_arch = "wasm32"))]
++pub use crate::camera_views::finish_camera_view_request;
++pub use crate::camera_views::{
++    CameraTile, CameraViewCommand, CameraViewRequest, CameraViews, camera_views,
++    publish_camera_views, take_camera_view_requests,
++};
+ pub use crate::data::*;
+ pub use crate::plugin::ViewerCorePlugin;
+ pub use crate::resources::{
+@@ -353,6 +359,22 @@
+                     .iter()
+                     .any(|node| node["entity"] == entity.id)
+             );
++            assert_eq!(
++                call(port, "get_camera_views", json!({}))["supported"],
++                false
++            );
++            for (name, args) in [
++                ("set_camera_views", json!({"count":4})),
++                ("focus_camera_view", json!({"index":0})),
++                ("set_view_camera", json!({"index":0,"entity":entity.id})),
++                ("get_camera_views", json!({"typo":true})),
++                (
++                    "set_camera_views",
++                    json!({"count":4,"active":null,"typo":true}),
++                ),
++            ] {
++                assert_eq!(raw_call(port, name, args)["isError"], true);
++            }
+             let edit = call(port, "set_render", json!({"exposure":2.5}));
+             assert_eq!(edit["queued"], true);
+             assert_eq!(edit["operation_status"], "queued");
+--- /dev/null
++++ b/apps/viewer/src/camera_views.rs
+@@ -0,0 +1,113 @@
++//! Frontend-owned camera tiles exposed through the existing viewer endpoint.
++use nightshade::{World, ecs::Entity};
++use serde_json::{Value, json};
++
++#[derive(Clone, Debug)]
++pub struct CameraTile {
++    pub index: usize,
++    pub camera: Entity,
++    /// Physical output pixels: x, y, width, height.
++    pub rect: [u32; 4],
++}
++
++#[derive(Clone, Debug, Default)]
++pub struct CameraViews {
++    pub supported: bool,
++    pub count: u32,
++    pub active: usize,
++    pub width: u32,
++    pub height: u32,
++    pub tiles: Vec<CameraTile>,
++}
++
++#[derive(Clone, Debug)]
++pub enum CameraViewCommand {
++    Layout {
++        count: u32,
++        active: Option<usize>,
++    },
++    Focus {
++        index: usize,
++    },
++    Assign {
++        index: usize,
++        camera: Option<Entity>,
++    },
++}
++
++pub struct CameraViewRequest {
++    pub operation_id: String,
++    pub command: CameraViewCommand,
++}
++
++pub(crate) fn state(views: &CameraViews) -> Value {
++    json!({"supported":views.supported, "count":views.count, "active":views.active,
++        "width":views.width, "height":views.height,
++        "tiles":views.tiles.iter().map(|t| json!({"index":t.index,"camera":t.camera.id,
++            "rect":{"x":t.rect[0],"y":t.rect[1],"width":t.rect[2],"height":t.rect[3]}})).collect::<Vec<_>>()})
++}
++
++pub fn publish_camera_views(world: &mut World, views: CameraViews) {
++    world
++        .res_mut::<crate::resources::ViewerResources>()
++        .camera_views = views;
++}
++
++pub fn camera_views(world: &World) -> CameraViews {
++    world
++        .res::<crate::resources::ViewerResources>()
++        .camera_views
++        .clone()
++}
++
++pub fn take_camera_view_requests(world: &mut World) -> Vec<CameraViewRequest> {
++    std::mem::take(
++        &mut world
++            .res_mut::<crate::resources::ViewerResources>()
++            .camera_view_requests,
++    )
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) fn enqueue(
++    viewer: &mut crate::resources::ViewerResources,
++    command: CameraViewCommand,
++    tool: &str,
++) -> Result<Value, String> {
++    if !viewer.camera_views.supported {
++        return Err("this frontend does not support shared camera tiles".into());
++    }
++    match command {
++        CameraViewCommand::Layout { count, active } => {
++            if !matches!(count, 1 | 2 | 4) {
++                return Err("camera count must be 1, 2 or 4".into());
++            }
++            if active.is_some_and(|i| i >= count as usize) {
++                return Err("active tile is outside the requested layout".into());
++            }
++        }
++        CameraViewCommand::Focus { index } | CameraViewCommand::Assign { index, .. } => {
++            if index >= viewer.camera_views.tiles.len() {
++                return Err("there is no visible tile at that index".into());
++            }
++        }
++    }
++    if viewer.camera_view_requests.len() >= 128 {
++        return Err("the camera view request queue is full".into());
++    }
++    let id = viewer
++        .operations
++        .reserve(tool, viewer.history.frame, None)?;
++    viewer.camera_view_requests.push(CameraViewRequest {
++        operation_id: id.clone(),
++        command,
++    });
++    Ok(json!({"queued":true,"operation_id":id,"operation_status":"queued"}))
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++pub fn finish_camera_view_request(world: &mut World, id: &str, result: Result<(), String>) {
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    let result = result.map(|()| state(&viewer.camera_views));
++    viewer.operations.finish(id, viewer.history.frame, result);
++}

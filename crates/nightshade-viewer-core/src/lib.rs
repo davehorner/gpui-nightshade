@@ -101,6 +101,9 @@ impl ViewerRuntime {
             .res_mut::<viewer::core::FrontendInput>()
             .pointer_over_ui = true;
         configure_editor_camera(&mut runtime.world);
+        runtime
+            .views
+            .configure(&mut runtime.world, Default::default(), 0);
         runtime.render()?;
         Ok(runtime)
     }
@@ -118,6 +121,7 @@ impl ViewerRuntime {
         self.world.increment_tick();
         self.stages.run_systems(&mut self.world);
         self.views.after_scene(&mut self.world);
+        self.views.apply_requests(&mut self.world);
     }
     fn draw_frame(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.frame
@@ -183,6 +187,9 @@ impl ViewportHost for ViewerRuntime {
             orbit.target_focus += nightshade::prelude::nalgebra_glm::Vec3::from(pose.target)
                 - nightshade::prelude::nalgebra_glm::Vec3::from(previous.target);
         }
+    }
+    fn camera_layout_state(&self) -> Option<(gpui_nightshade::views::CameraLayout, usize)> {
+        Some((self.views.layout, self.views.active))
     }
     fn set_camera_layout(
         &mut self,

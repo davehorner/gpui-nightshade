@@ -18,6 +18,8 @@ Changes are isolated to nightshade-wgpu: optional-surface initialization retaini
 
 `0008-mcp-operation-tracking.patch` adds bounded operation IDs for queued scene edits, generation-aware target checks, retained effective-state results and an explicit scene-application completion boundary. It adds idempotent playback and keeps file/renderer worker acknowledgements untracked. Native HTTP and core regressions cover retained results, invalid IDs, tracker bounds, stale-target failure and repeated playback commands. See [MCP contract](mcp.md).
 
+`0009-mcp-camera-views.patch` adds frontend camera-tile state and a bounded request bridge to the existing native endpoint. Four tools query/change layout, focus and camera assignment. Frontends publish actual camera IDs/rectangles and complete operation records only after application. The original native frontend reports unsupported rather than claiming tile control. GPUI uses the existing shared-scene camera implementation. See [shared camera tools](mcp.md#shared-camera-tiles).
+
 ## GPUI
 
 `patches/gpui/0001-shared-external-images.patch` is a reviewable diff against the pristine `gpui-pre` and `gpui-pre-windows` 0.3.14 source exports. Paths are relative to `upstream/gpui-snapshot`; the source changes are already applied there. Export provenance is Zed `f126950f9d3b62666f97437ae5d4ccac2272c4db`, as declared by those published packages. Root Cargo patches select the local exports. Their normalized manifests are kept so the exact matching registry family remains usable without cloning the entire Zed dependency workspace.

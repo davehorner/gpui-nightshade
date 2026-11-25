@@ -238,6 +238,10 @@ pub trait ViewportHost {
     }
     fn set_camera(&mut self, pose: CameraPose);
     /// Optional same-scene camera layout; simple scene hosts retain one view.
+    /// Actual host layout/focus, including changes made through remote controls.
+    fn camera_layout_state(&self) -> Option<(crate::views::CameraLayout, usize)> {
+        None
+    }
     fn set_camera_layout(
         &mut self,
         layout: crate::views::CameraLayout,

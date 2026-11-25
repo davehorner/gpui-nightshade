@@ -73,3 +73,5 @@ Tests cover remote-before-RNG ordering, deterministic choices, remote validation
 ## Scene application acknowledgements
 
 This client requires `get_operation` and `set_playback`. Native clip setup and pause wait for their returned operation IDs to reach `applied`; repeated pause requests cannot resume playback. `Mcp.call_applied` returns the retained operation result and raises on failure or a bounded wait timeout. This confirms native scene application, not GPU presentation. Model loading and screenshot writing remain asynchronous and do not yet have correlated completion IDs.
+
+To control the same shared scene from several cameras, use `client.call_applied("set_camera_views", count=4, active=0)`, then `focus_camera_view` and `frame_model` for each desired tile. `get_camera_views` returns the actual camera IDs and output rectangles. Existing camera transforms and native clips continue using those entities. See the [camera tool example](../../docs/mcp.md#shared-camera-tiles).

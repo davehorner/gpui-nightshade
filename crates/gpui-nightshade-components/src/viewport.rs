@@ -261,6 +261,12 @@ impl Focusable for NightshadeViewport {
 }
 impl Render for NightshadeViewport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (layout, active) = self.worker.camera_layout();
+        if (self.request.layout, self.request.active_view) != (layout, active) {
+            self.cancel_input();
+            self.request.layout = layout;
+            self.focus_view(active);
+        }
         if self.poll_task.is_none() {
             self.poll_task = Some(cx.spawn_in(window, async |view, cx| {
                 loop {
