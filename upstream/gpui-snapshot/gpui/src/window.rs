@@ -5669,6 +5669,14 @@ impl Window {
         });
     }
 
+    /// Poll completed external-image imports without waiting for GPU work.
+    ///
+    /// Poll external retirement while waiting for new frames as well: retaining
+    /// completed imports until another draw can exhaust a producer's frame pool.
+    pub fn poll_external_images(&mut self) {
+        self.sprite_atlas.collect_retired_external();
+    }
+
     /// Removes an image from the sprite atlas.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         for frame_index in 0..data.frame_count() {

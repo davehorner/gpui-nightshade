@@ -1,0 +1,67 @@
+diff --git a/gpui-windows/src/directx_atlas.rs b/gpui-windows/src/directx_atlas.rs
+index 2b21c73..19fc0cf 100644
+--- a/gpui-windows/src/directx_atlas.rs
++++ b/gpui-windows/src/directx_atlas.rs
+@@ -93,6 +93,9 @@ impl DirectXAtlas {
+ }
+ 
+ impl PlatformAtlas for DirectXAtlas {
++    fn collect_retired_external(&self) {
++        self.collect_retired();
++    }
+     fn get_or_insert_external(
+         &self,
+         key: AtlasKey,
+@@ -636,6 +639,7 @@ mod tests {
+             drop(binding);
+             drop(frame);
+             atlas.remove(&key);
++            atlas.collect_retired_external();
+             assert_eq!(atlas.0.lock().backend.retired_external.len(), 1);
+             assert!(
+                 retained.upgrade().is_some(),
+@@ -659,7 +663,9 @@ mod tests {
+                 );
+                 std::thread::sleep(std::time::Duration::from_millis(1));
+             }
+-            atlas.0.lock().backend.collect_retired();
++            // The public atlas polling hook must release completed leases even
++            // if no rendering/import happens after this eviction.
++            atlas.collect_retired_external();
+             assert!(atlas.0.lock().backend.retired_external.is_empty());
+             assert!(
+                 retained.upgrade().is_none(),
+diff --git a/gpui/src/platform.rs b/gpui/src/platform.rs
+index e8a0413..cbddd6e 100644
+--- a/gpui/src/platform.rs
++++ b/gpui/src/platform.rs
+@@ -1878,6 +1878,10 @@ impl From<RenderImageParams> for AtlasKey {
+ 
+ #[expect(missing_docs)]
+ pub trait PlatformAtlas {
++    /// Release completed external-image imports without requiring another draw.
++    /// This must not wait for GPU work; other atlases have nothing to collect.
++    fn collect_retired_external(&self) {}
++
+     /// Import an immutable GPU image. Unsupported platforms return an explicit error.
+     fn get_or_insert_external(
+         &self,
+diff --git a/gpui/src/window.rs b/gpui/src/window.rs
+index dba556c..f7e3284 100644
+--- a/gpui/src/window.rs
++++ b/gpui/src/window.rs
+@@ -5669,6 +5669,14 @@ impl Window {
+         });
+     }
+ 
++    /// Poll completed external-image imports without waiting for GPU work.
++    ///
++    /// Poll external retirement while waiting for new frames as well: retaining
++    /// completed imports until another draw can exhaust a producer's frame pool.
++    pub fn poll_external_images(&mut self) {
++        self.sprite_atlas.collect_retired_external();
++    }
++
+     /// Removes an image from the sprite atlas.
+     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
+         for frame_index in 0..data.frame_count() {

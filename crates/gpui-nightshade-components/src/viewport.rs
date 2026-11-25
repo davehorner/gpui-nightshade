@@ -17,7 +17,7 @@ pub struct NightshadeViewport {
     bounds: Bounds<Pixels>,
     scale: f32,
     pick_sequence: u64,
-    _poll: Task<()>,
+    poll_task: Option<Task<()>>,
 }
 impl NightshadeViewport {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -50,23 +50,6 @@ impl NightshadeViewport {
             })
         })
         .detach();
-        let poll = cx.spawn(async |view, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                if view
-                    .update(cx, |view, cx| {
-                        if view.visibility.is_presented() && view.worker.has_update() {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
         Self {
             worker: Worker::new(backend, factory),
             image: None,
@@ -89,7 +72,7 @@ impl NightshadeViewport {
             scale: 1.,
             pick_sequence: 0,
             focus: cx.focus_handle(),
-            _poll: poll,
+            poll_task: None,
         }
     }
     /// Owned snapshot of the actual transport, adapter, visibility and failures.
@@ -230,6 +213,26 @@ impl Focusable for NightshadeViewport {
 }
 impl Render for NightshadeViewport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.poll_task.is_none() {
+            self.poll_task = Some(cx.spawn_in(window, async |view, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(16))
+                        .await;
+                    if view
+                        .update_in(cx, |view, window, cx| {
+                            window.poll_external_images();
+                            if view.visibility.is_presented() && view.worker.has_update() {
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }));
+        }
         self.set_window_visible(window.is_visible(), cx);
         if self.input_subscriptions.is_none() {
             let focus = self.focus.clone();

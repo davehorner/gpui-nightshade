@@ -93,6 +93,9 @@ impl DirectXAtlas {
 }
 
 impl PlatformAtlas for DirectXAtlas {
+    fn collect_retired_external(&self) {
+        self.collect_retired();
+    }
     fn get_or_insert_external(
         &self,
         key: AtlasKey,
@@ -636,6 +639,7 @@ mod tests {
             drop(binding);
             drop(frame);
             atlas.remove(&key);
+            atlas.collect_retired_external();
             assert_eq!(atlas.0.lock().backend.retired_external.len(), 1);
             assert!(
                 retained.upgrade().is_some(),
@@ -659,7 +663,9 @@ mod tests {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            atlas.0.lock().backend.collect_retired();
+            // The public atlas polling hook must release completed leases even
+            // if no rendering/import happens after this eviction.
+            atlas.collect_retired_external();
             assert!(atlas.0.lock().backend.retired_external.is_empty());
             assert!(
                 retained.upgrade().is_none(),

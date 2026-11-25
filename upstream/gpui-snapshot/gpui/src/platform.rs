@@ -1878,6 +1878,10 @@ impl From<RenderImageParams> for AtlasKey {
 
 #[expect(missing_docs)]
 pub trait PlatformAtlas {
+    /// Release completed external-image imports without requiring another draw.
+    /// This must not wait for GPU work; other atlases have nothing to collect.
+    fn collect_retired_external(&self) {}
+
     /// Import an immutable GPU image. Unsupported platforms return an explicit error.
     fn get_or_insert_external(
         &self,

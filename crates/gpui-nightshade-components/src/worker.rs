@@ -100,7 +100,10 @@ impl Worker {
     }
     pub fn paint_failed(&self, error: String) {
         let mut state = self.shared.0.lock().unwrap();
-        if state.status.requested == BackendPreference::Auto && !state.fallback {
+        if state.status.requested == BackendPreference::Auto
+            && state.status.active == Some(PresentationBackend::WindowsShared)
+            && !state.fallback
+        {
             state.fallback = true;
             state.status.fallback_reason = Some(error);
             state.revision += 1;
@@ -694,6 +697,10 @@ mod tests {
         );
         assert!(status.error.is_none());
         assert!(!status.active.unwrap().capabilities().gpu_resident);
+        worker.paint_failed("readback upload rejected".into());
+        let failed = worker.presentation_status();
+        assert_eq!(failed.error.as_deref(), Some("readback upload rejected"));
+        assert_eq!(failed.fallback_reason, status.fallback_reason);
         worker.shutdown().unwrap().join().unwrap();
     }
 }

@@ -2,10 +2,11 @@ param(
     [int]$Frames = 1200,
     [int]$Port = 19790,
     [int]$TimeoutSeconds = 600,
-    [switch]$Stress
+    [switch]$Stress,
+    [switch]$StaticScene
 )
 $ErrorActionPreference = 'Stop'
-if ($Frames -lt 600) { throw 'Use at least 600 frames to cover both scenes.' }
+if ($Frames -lt 600) { throw 'Use at least 600 frames for shared-GPU acceptance.' }
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'target/debug/gpui-nightshade-viewer.exe'
 if (!(Test-Path -LiteralPath $exe)) { throw 'Build gpui-nightshade-viewer first.' }
@@ -55,7 +56,9 @@ try {
             try { $null = Invoke-ViewerTool 'get_scene' @{}; $ready = $true } catch { }
         }
         if ($published -ge 300 -and !$switched -and $ready) {
-            $null = Invoke-ViewerTool 'load_file' @{path=(Join-Path $root 'upstream/nightshade/assets/gltf/fox.glb')}
+            if (!$StaticScene) {
+                $null = Invoke-ViewerTool 'load_file' @{path=(Join-Path $root 'upstream/nightshade/assets/gltf/fox.glb')}
+            }
             $switched = $true
         }
         if ($published -gt $lastReported) {
@@ -75,18 +78,24 @@ try {
     if ($Stress -and ($resizeGenerations -lt 8 -or $suspensions -lt 4 -or $resumptions -lt 4)) {
         throw "Lifecycle did not reach worker: resize=$resizeGenerations suspend=$suspensions resume=$resumptions"
     }
-    $animation = Invoke-ViewerTool 'get_animation' @{}
-    if (!$animation.playing -or $animation.clips.Count -lt 3) { throw 'Fox animation was not loaded/playing.' }
-    Start-Sleep -Milliseconds 200
     $next = Invoke-ViewerTool 'get_animation' @{}
-    if ($next.time -eq $animation.time) { throw 'Animation time did not advance.' }
+    if (!$StaticScene) {
+        if (!$next.playing -or $next.clips.Count -lt 3) { throw 'Fox animation was not loaded/playing.' }
+        $animation = $next
+        Start-Sleep -Milliseconds 200
+        $next = Invoke-ViewerTool 'get_animation' @{}
+        if ($next.time -eq $animation.time) { throw 'Animation time did not advance.' }
+    } else {
+        $scene = Invoke-ViewerTool 'get_scene' @{}
+        if (!$scene.nodes.Count) { throw 'Static scene was not loaded.' }
+    }
     [string]$finalLog = Get-Content -LiteralPath $log -Raw
     if ($finalLog -match 'worker stopped|device status: Err|panicked|D3D11_MESSAGE_SEVERITY\(1\)') {
-        throw "GPU failure during final animation verification; see $log"
+        throw "GPU failure during final scene verification; see $log"
     }
     $report = @{
         status='passed'; backend='windows-shared'; cpuReadbackFallback=$false
-        lifecycleStress=[bool]$Stress; publishedFrames=$published; presentsSubmitted=$presents
+        lifecycleStress=[bool]$Stress; staticScene=[bool]$StaticScene; publishedFrames=$published; presentsSubmitted=$presents
         resizeGenerations=$resizeGenerations; suspensions=$suspensions; resumptions=$resumptions
         resolution='see stderr progress'; peakProcessWorkingSetBytes=$peakWorkingSet
         animationClips=$next.clips.Count; log=$log
@@ -94,7 +103,7 @@ try {
     $report | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
     Write-Output "Shared-GPU check passed: $run"
 } catch {
-    @{status='failed'; lifecycleStress=[bool]$Stress; backend='windows-shared'; publishedFrames=$published; presentsSubmitted=$presents; error=$_.Exception.Message; log=$log} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
+    @{status='failed'; lifecycleStress=[bool]$Stress; staticScene=[bool]$StaticScene; backend='windows-shared'; publishedFrames=$published; presentsSubmitted=$presents; error=$_.Exception.Message; log=$log} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
     throw
 } finally {
     if ($process -and !$process.HasExited) { $process.Kill() }
