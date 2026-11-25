@@ -51,3 +51,22 @@ There is **one GPU-to-GPU copy** into shared resources and no production CPU pix
 - Release-mode timing, actual presentation/GPU timings and allocation/VRAM measurements.
 - Additional adapters/drivers and real device-loss recovery.
 - Post-reset visual automation: desktop capture began returning `FrameArrived timed out` during this investigation, so later runs rely on native import pixel tests, publication counters and MCP scene state. This limits visual/lifecycle coverage.
+
+## Consumer sampling isolation (2026-11-25)
+
+Diagnostic `-Probe` modes on `scripts/verify-windows-shared.ps1` isolate import, signaling and sampling. They are not presentation acceptance modes:
+
+| Probe / experiment | Observation |
+| --- | --- |
+| `no-draw`: import only, no scene shader or completion signal | 600 publications passed |
+| `signal-only`: import and completion signal, no scene shader | 600 publications passed |
+| `frozen`: repeatedly sample the initial published frame | 600 consumer draw submissions passed; only two frames published |
+| `fresh`: retire each allocation after publication | Visible scene still hung; allocation reuse alone does not explain it |
+| `aligned`: round both dimensions to multiples of 64 | Visible scene still hung |
+| Explicit shader-resource unbinding, GPU waits in both directions, or a global submission gate | Each still reproduced the visible-scene hang |
+
+Unsuccessful GPU-wait and global-gate implementations were removed. The frozen probe now services simulation without further rendering after publication, avoiding an unbounded producer queue in that diagnostic mode; the earlier frozen result predates that adjustment. Aligned output changes scaling and has no validated input mapping.
+
+`windows::sampling_test::changing_shared_frames_sample_without_gpui_compositor` adds a separate native D3D11 fullscreen shader test. It uses the actual shared importer, rotates the cube camera, draws into a private 1351×715 render target, and waits for each consumer completion before reusing the allocation. A 600-frame DX12/D3D11 run passed and verified 42 distinct output colors. This is serialized shader-sampling validation, with no GPUI atlas, window or swapchain; it does not prove concurrent full-viewer presentation. Set `SHARED_SAMPLING_FRAMES` to change its default 120-frame duration.
+
+The compositor now obtains the shader view and matching synchronization owner under one atlas lock and unbinds shared SRVs before signaling completion. Fresh visible runs still failed with those changes. The next isolation boundary is pipelined native sampling versus GPUI atlas/swapchain presentation; the production blocker remains open and readback remains the default.

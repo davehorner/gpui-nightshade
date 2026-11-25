@@ -1,0 +1,196 @@
+diff --git a/gpui-windows/src/directx_atlas.rs b/gpui-windows/src/directx_atlas.rs
+index a9d4a5b..748d757 100644
+--- a/gpui-windows/src/directx_atlas.rs
++++ b/gpui-windows/src/directx_atlas.rs
+@@ -14,6 +14,10 @@ use gpui::{
+ };
+ 
+ pub(crate) struct DirectXAtlas(Mutex<AtlasState<DirectXAtlasTextures>>);
++pub(crate) struct TextureBinding {
++    pub(crate) views: [Option<ID3D11ShaderResourceView>; 1],
++    pub(crate) external: Option<std::sync::Arc<crate::shared_texture::ImportedTexture>>,
++}
+ 
+ struct DirectXAtlasTextures {
+     device: ID3D11Device,
+@@ -57,11 +61,14 @@ impl DirectXAtlas {
+         Some(texture.view.clone())
+     }
+ 
+-    pub(crate) fn external_texture(
+-        &self,
+-        id: AtlasTextureId,
+-    ) -> Option<std::sync::Arc<crate::shared_texture::ImportedTexture>> {
+-        self.0.lock().backend.texture(id)?.external.clone()
++    /// Pin the view and its matching synchronization owner in one lookup.
++    pub(crate) fn texture_binding(&self, id: AtlasTextureId) -> Option<TextureBinding> {
++        let lock = self.0.lock();
++        let texture = lock.backend.texture(id)?;
++        Some(TextureBinding {
++            views: texture.view.clone(),
++            external: texture.external.clone(),
++        })
+     }
+     pub(crate) fn handle_device_lost(
+         &self,
+diff --git a/gpui-windows/src/directx_renderer.rs b/gpui-windows/src/directx_renderer.rs
+index 09c22ec..ef6bdaf 100644
+--- a/gpui-windows/src/directx_renderer.rs
++++ b/gpui-windows/src/directx_renderer.rs
+@@ -831,23 +831,45 @@ impl DirectXRenderer {
+             return Ok(());
+         }
+         let devices = self.devices.as_ref().context("devices missing")?;
+-        let Some(texture_view) = self.atlas.get_texture_view(texture_id) else {
++        let Some(binding) = self.atlas.texture_binding(texture_id) else {
+             return Ok(());
+         };
+-        let external = self.atlas.external_texture(texture_id);
+-        if let Some(external) = &external { external.before_draw()?; }
+-        self.pipelines.poly_sprites.draw_range_with_texture(
+-            &devices.device_context,
+-            &texture_view,
+-            self.globals
+-                .batch_params_buffer
+-                .as_ref()
+-                .context("batch params buffer missing")?,
+-            slice::from_ref(&self.globals.sampler),
+-            start as u32,
+-            len as u32,
+-        )?;
+-        if let Some(external) = &external { external.after_draw()?; }
++        let external = &binding.external;
++        let probe = crate::shared_texture::interop_probe();
++        if external.is_some() && probe == crate::shared_texture::InteropProbe::NoDraw {
++            return Ok(());
++        }
++        let draw = || -> Result<()> {
++            if external.is_none()
++                || matches!(
++                    probe,
++                    crate::shared_texture::InteropProbe::Normal
++                        | crate::shared_texture::InteropProbe::Frozen
++                        | crate::shared_texture::InteropProbe::Fresh
++                        | crate::shared_texture::InteropProbe::Aligned
++                )
++            {
++                self.pipelines.poly_sprites.draw_range_with_texture(
++                    &devices.device_context,
++                    &binding.views,
++                    self.globals
++                        .batch_params_buffer
++                        .as_ref()
++                        .context("batch params buffer missing")?,
++                    slice::from_ref(&self.globals.sampler),
++                    start as u32,
++                    len as u32,
++                )?;
++            }
++            Ok(())
++        };
++        if let Some(external) = external {
++            external.before_draw()?;
++        }
++        draw()?;
++        if let Some(external) = external {
++            external.after_draw()?;
++        }
+         Ok(())
+     }
+ 
+diff --git a/gpui-windows/src/shared_texture.rs b/gpui-windows/src/shared_texture.rs
+index 93a3671..9846e1b 100644
+--- a/gpui-windows/src/shared_texture.rs
++++ b/gpui-windows/src/shared_texture.rs
+@@ -15,6 +15,48 @@ use windows::{
+     core::Interface,
+ };
+ 
++#[derive(Clone, Copy, PartialEq)]
++pub(crate) enum InteropProbe {
++    Normal,
++    NoDraw,
++    SignalOnly,
++    Frozen,
++    Fresh,
++    Aligned,
++}
++pub(crate) fn interop_probe() -> InteropProbe {
++    static PROBE: std::sync::OnceLock<InteropProbe> = std::sync::OnceLock::new();
++    *PROBE.get_or_init(|| {
++        let probe = match std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() {
++            Ok("no-draw") => InteropProbe::NoDraw,
++            Ok("signal-only") => InteropProbe::SignalOnly,
++            Ok("frozen") => InteropProbe::Frozen,
++            Ok("fresh") => InteropProbe::Fresh,
++            Ok("aligned") => InteropProbe::Aligned,
++            _ => InteropProbe::Normal,
++        };
++        if probe == InteropProbe::Aligned {
++            eprintln!("GPU diagnostic aligned-size probe: render dimensions rounded to 64 pixels; input alignment is not validated");
++        } else if probe == InteropProbe::Fresh {
++            eprintln!("GPU diagnostic fresh-allocation probe: each shared ring is retired after publication");
++        } else if probe == InteropProbe::Frozen {
++            eprintln!(
++                "GPU diagnostic frozen-frame probe: shared output stops updating after publication"
++            );
++        } else if probe != InteropProbe::Normal {
++            eprintln!(
++                "GPU diagnostic probe enabled: {}; scene pixels are NOT drawn",
++                if probe == InteropProbe::NoDraw {
++                    "no-draw"
++                } else {
++                    "signal-only"
++                }
++            );
++        }
++        probe
++    })
++}
++
+ /// Owns an NT handle. Never exposes a borrowed handle beyond its owner lifetime.
+ #[derive(Debug)]
+ pub struct SharedHandle(HANDLE);
+@@ -75,7 +117,8 @@ pub struct ImportedTexture {
+     context: ID3D11DeviceContext4,
+ }
+ impl ImportedTexture {
+-    pub(crate) fn before_draw(&self) -> anyhow::Result<()> {
++    /// Verify producer completion before submitting a draw.
++    pub fn before_draw(&self) -> anyhow::Result<()> {
+         let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();
+         let completed = unsafe { self.ready_fence.GetCompletedValue() };
+         anyhow::ensure!(
+@@ -84,7 +127,19 @@ impl ImportedTexture {
+         );
+         Ok(())
+     }
+-    pub(crate) fn after_draw(&self) -> anyhow::Result<()> {
++    /// Unbind the shared SRV and signal completion after its draw.
++    pub fn after_draw(&self) -> anyhow::Result<()> {
++        self.signal_done()?;
++        if std::env::var_os("GPUI_NIGHTSHADE_TRACE_GPU").is_some() {
++            static DRAWS: AtomicU64 = AtomicU64::new(0);
++            let draws = DRAWS.fetch_add(1, Ordering::Relaxed) + 1;
++            if draws.is_multiple_of(300) {
++                eprintln!("GPUI shared consumer: draws_submitted={draws}");
++            }
++        }
++        Ok(())
++    }
++    fn signal_done(&self) -> anyhow::Result<()> {
+         let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();
+         let value = frame
+             .last_read
+@@ -94,6 +149,11 @@ impl ImportedTexture {
+             .map_err(|_| anyhow::anyhow!("consumer fence timeline exhausted"))?
+             + 1;
+         unsafe {
++            // Release both shader-stage bindings before declaring this shared
++            // allocation reusable by the D3D12 producer. A CPU frame lease does
++            // not cover references retained by the immediate context itself.
++            self.context.VSSetShaderResources(0, Some(&[None]));
++            self.context.PSSetShaderResources(0, Some(&[None]));
+             self.context.Signal(&self.consumed_fence, value)?;
+             self.context.Flush();
+         }

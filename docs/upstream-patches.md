@@ -22,3 +22,5 @@ Interop is confined to the Windows producer module and GPUI's `shared_texture.rs
 
 This is a source/lifetime self-review and runtime validation on one adapter. Independent review, debug-layer validation, device-loss handling and broad-driver testing remain outstanding. The GetCompletedValue device-removal sentinel stops shared presentation with an error; native device recreation is not implemented.
 
+
+`0003-consumer-sampling-isolation.patch` pins each sampled view with its matching synchronization owner in one atlas lookup, unbinds shared shader resources before signaling, and exposes draw hooks for native sampling validation. Opt-in interop probes isolate import/signaling/frozen sampling from live scene drawing; these modes are diagnostic only. A separate serialized fullscreen D3D11 sampling test passes 600 changing-camera cube frames, while full-viewer shared presentation remains failing.

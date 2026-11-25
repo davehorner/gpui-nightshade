@@ -293,6 +293,9 @@ fn completed_at_least(completed: u64, required: u64) -> bool {
 }
 
 #[cfg(test)]
+mod sampling_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use gpui_nightshade::host::SceneHost;
@@ -305,7 +308,7 @@ mod tests {
         core::Interface,
     };
 
-    fn wait(fence: &ID3D12Fence, value: u64) {
+    pub(super) fn wait(fence: &ID3D12Fence, value: u64) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let completed = unsafe { fence.GetCompletedValue() };

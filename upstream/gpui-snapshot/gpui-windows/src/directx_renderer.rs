@@ -831,23 +831,45 @@ impl DirectXRenderer {
             return Ok(());
         }
         let devices = self.devices.as_ref().context("devices missing")?;
-        let Some(texture_view) = self.atlas.get_texture_view(texture_id) else {
+        let Some(binding) = self.atlas.texture_binding(texture_id) else {
             return Ok(());
         };
-        let external = self.atlas.external_texture(texture_id);
-        if let Some(external) = &external { external.before_draw()?; }
-        self.pipelines.poly_sprites.draw_range_with_texture(
-            &devices.device_context,
-            &texture_view,
-            self.globals
-                .batch_params_buffer
-                .as_ref()
-                .context("batch params buffer missing")?,
-            slice::from_ref(&self.globals.sampler),
-            start as u32,
-            len as u32,
-        )?;
-        if let Some(external) = &external { external.after_draw()?; }
+        let external = &binding.external;
+        let probe = crate::shared_texture::interop_probe();
+        if external.is_some() && probe == crate::shared_texture::InteropProbe::NoDraw {
+            return Ok(());
+        }
+        let draw = || -> Result<()> {
+            if external.is_none()
+                || matches!(
+                    probe,
+                    crate::shared_texture::InteropProbe::Normal
+                        | crate::shared_texture::InteropProbe::Frozen
+                        | crate::shared_texture::InteropProbe::Fresh
+                        | crate::shared_texture::InteropProbe::Aligned
+                )
+            {
+                self.pipelines.poly_sprites.draw_range_with_texture(
+                    &devices.device_context,
+                    &binding.views,
+                    self.globals
+                        .batch_params_buffer
+                        .as_ref()
+                        .context("batch params buffer missing")?,
+                    slice::from_ref(&self.globals.sampler),
+                    start as u32,
+                    len as u32,
+                )?;
+            }
+            Ok(())
+        };
+        if let Some(external) = external {
+            external.before_draw()?;
+        }
+        draw()?;
+        if let Some(external) = external {
+            external.after_draw()?;
+        }
         Ok(())
     }
 

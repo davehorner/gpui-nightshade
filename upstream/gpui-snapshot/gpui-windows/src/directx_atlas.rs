@@ -14,6 +14,10 @@ use gpui::{
 };
 
 pub(crate) struct DirectXAtlas(Mutex<AtlasState<DirectXAtlasTextures>>);
+pub(crate) struct TextureBinding {
+    pub(crate) views: [Option<ID3D11ShaderResourceView>; 1],
+    pub(crate) external: Option<std::sync::Arc<crate::shared_texture::ImportedTexture>>,
+}
 
 struct DirectXAtlasTextures {
     device: ID3D11Device,
@@ -57,11 +61,14 @@ impl DirectXAtlas {
         Some(texture.view.clone())
     }
 
-    pub(crate) fn external_texture(
-        &self,
-        id: AtlasTextureId,
-    ) -> Option<std::sync::Arc<crate::shared_texture::ImportedTexture>> {
-        self.0.lock().backend.texture(id)?.external.clone()
+    /// Pin the view and its matching synchronization owner in one lookup.
+    pub(crate) fn texture_binding(&self, id: AtlasTextureId) -> Option<TextureBinding> {
+        let lock = self.0.lock();
+        let texture = lock.backend.texture(id)?;
+        Some(TextureBinding {
+            views: texture.view.clone(),
+            external: texture.external.clone(),
+        })
     }
     pub(crate) fn handle_device_lost(
         &self,

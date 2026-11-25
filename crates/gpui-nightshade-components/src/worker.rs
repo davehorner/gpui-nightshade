@@ -263,6 +263,10 @@ fn run(
     let mut published_frames = 0u64;
     let started = std::time::Instant::now();
     let mut last_trace = started;
+    let frozen_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("frozen");
+    let aligned_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("aligned");
+    let fresh_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("fresh");
+    let mut published_generation = None;
     loop {
         transport.check_device()?;
         #[cfg(target_os = "windows")]
@@ -283,7 +287,7 @@ fn run(
             );
             last_trace = std::time::Instant::now();
         }
-        let (request, revision, fallback, input_pending, visible) = {
+        let (mut request, revision, fallback, input_pending, visible) = {
             let mut state = shared.0.lock().unwrap();
             while !state.quit
                 && state.revision == applied
@@ -305,6 +309,10 @@ fn run(
                 state.visible,
             )
         };
+        if gpu && aligned_probe {
+            request.width = request.width.div_ceil(64) * 64;
+            request.height = request.height.div_ceil(64) * 64;
+        }
         if !visible {
             if let Some(event) = shared.0.lock().unwrap().input.pop() {
                 host.pointer_input(event);
@@ -355,20 +363,17 @@ fn run(
                 host.renderer().surface_config.width,
                 host.renderer().surface_config.height,
             );
-        if (revision != applied || host.continuous() || input_pending)
+        let refresh_requested =
+            resize_requested || (gpu && fresh_probe && published_generation == Some(generation));
+        if (revision != applied || host.continuous() || input_pending || refresh_requested)
             && transport.can_submit()
-            && (!resize_requested || (transport.can_resize() && retirement_capacity))
+            && (!refresh_requested || (transport.can_resize() && retirement_capacity))
         {
             if request.width == 0 || request.height == 0 {
                 applied = revision;
                 continue;
             }
-            if (request.width, request.height)
-                != (
-                    host.renderer().surface_config.width,
-                    host.renderer().surface_config.height,
-                )
-            {
+            if refresh_requested {
                 generation += 1;
                 // Validate replacement allocations before replacing the live generation.
                 let replacement = Transport::new(
@@ -378,7 +383,9 @@ fn run(
                     generation,
                     gpu,
                 )?;
-                host.resize(request.width, request.height)?;
+                if resize_requested {
+                    host.resize(request.width, request.height)?;
+                }
                 let previous = std::mem::replace(&mut transport, replacement);
                 #[cfg(not(target_os = "windows"))]
                 drop(previous);
@@ -408,8 +415,12 @@ fn run(
             if let Some(event) = shared.0.lock().unwrap().input.pop() {
                 host.pointer_input(event);
             }
-            host.render()?;
-            shared.0.lock().unwrap().rendered_frames += 1;
+            if frozen_probe && published_generation == Some(generation) {
+                host.service_hidden()?;
+            } else {
+                host.render()?;
+                shared.0.lock().unwrap().rendered_frames += 1;
+            }
             let source = host.renderer().external_output.as_ref().unwrap();
             match &mut transport {
                 Transport::Readback(ring) => {
@@ -425,7 +436,9 @@ fn run(
                 }
                 #[cfg(target_os = "windows")]
                 Transport::Shared(ring) => {
-                    if let Some(frame) =
+                    if frozen_probe && published_generation == Some(generation) {
+                        applied = revision;
+                    } else if let Some(frame) =
                         ring.copy_frame(&host.renderer().device, &host.renderer().queue, source)?
                     {
                         applied = revision;
@@ -442,6 +455,7 @@ fn run(
         if let Transport::Shared(ring) = &mut transport
             && let Some(frame) = ring.take_ready()
         {
+            published_generation = Some(generation);
             published_frames += 1;
             if trace_gpu && published_frames.is_multiple_of(300) {
                 eprintln!(

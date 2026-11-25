@@ -15,6 +15,48 @@ use windows::{
     core::Interface,
 };
 
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum InteropProbe {
+    Normal,
+    NoDraw,
+    SignalOnly,
+    Frozen,
+    Fresh,
+    Aligned,
+}
+pub(crate) fn interop_probe() -> InteropProbe {
+    static PROBE: std::sync::OnceLock<InteropProbe> = std::sync::OnceLock::new();
+    *PROBE.get_or_init(|| {
+        let probe = match std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() {
+            Ok("no-draw") => InteropProbe::NoDraw,
+            Ok("signal-only") => InteropProbe::SignalOnly,
+            Ok("frozen") => InteropProbe::Frozen,
+            Ok("fresh") => InteropProbe::Fresh,
+            Ok("aligned") => InteropProbe::Aligned,
+            _ => InteropProbe::Normal,
+        };
+        if probe == InteropProbe::Aligned {
+            eprintln!("GPU diagnostic aligned-size probe: render dimensions rounded to 64 pixels; input alignment is not validated");
+        } else if probe == InteropProbe::Fresh {
+            eprintln!("GPU diagnostic fresh-allocation probe: each shared ring is retired after publication");
+        } else if probe == InteropProbe::Frozen {
+            eprintln!(
+                "GPU diagnostic frozen-frame probe: shared output stops updating after publication"
+            );
+        } else if probe != InteropProbe::Normal {
+            eprintln!(
+                "GPU diagnostic probe enabled: {}; scene pixels are NOT drawn",
+                if probe == InteropProbe::NoDraw {
+                    "no-draw"
+                } else {
+                    "signal-only"
+                }
+            );
+        }
+        probe
+    })
+}
+
 /// Owns an NT handle. Never exposes a borrowed handle beyond its owner lifetime.
 #[derive(Debug)]
 pub struct SharedHandle(HANDLE);
@@ -75,7 +117,8 @@ pub struct ImportedTexture {
     context: ID3D11DeviceContext4,
 }
 impl ImportedTexture {
-    pub(crate) fn before_draw(&self) -> anyhow::Result<()> {
+    /// Verify producer completion before submitting a draw.
+    pub fn before_draw(&self) -> anyhow::Result<()> {
         let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();
         let completed = unsafe { self.ready_fence.GetCompletedValue() };
         anyhow::ensure!(
@@ -84,7 +127,19 @@ impl ImportedTexture {
         );
         Ok(())
     }
-    pub(crate) fn after_draw(&self) -> anyhow::Result<()> {
+    /// Unbind the shared SRV and signal completion after its draw.
+    pub fn after_draw(&self) -> anyhow::Result<()> {
+        self.signal_done()?;
+        if std::env::var_os("GPUI_NIGHTSHADE_TRACE_GPU").is_some() {
+            static DRAWS: AtomicU64 = AtomicU64::new(0);
+            let draws = DRAWS.fetch_add(1, Ordering::Relaxed) + 1;
+            if draws.is_multiple_of(300) {
+                eprintln!("GPUI shared consumer: draws_submitted={draws}");
+            }
+        }
+        Ok(())
+    }
+    fn signal_done(&self) -> anyhow::Result<()> {
         let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();
         let value = frame
             .last_read
@@ -94,6 +149,11 @@ impl ImportedTexture {
             .map_err(|_| anyhow::anyhow!("consumer fence timeline exhausted"))?
             + 1;
         unsafe {
+            // Release both shader-stage bindings before declaring this shared
+            // allocation reusable by the D3D12 producer. A CPU frame lease does
+            // not cover references retained by the immediate context itself.
+            self.context.VSSetShaderResources(0, Some(&[None]));
+            self.context.PSSetShaderResources(0, Some(&[None]));
             self.context.Signal(&self.consumed_fence, value)?;
             self.context.Flush();
         }
