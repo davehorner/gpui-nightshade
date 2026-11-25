@@ -39,5 +39,14 @@ fn main() {
             .map(|v| v.parse().expect("invalid agent port")),
         ..Default::default()
     };
-    editor::launch(backend, arguments);
+    let camera_layout = match args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--camera-views="))
+    {
+        None | Some("1") => gpui_nightshade_components::CameraLayout::Single,
+        Some("2") => gpui_nightshade_components::CameraLayout::Split,
+        Some("4") => gpui_nightshade_components::CameraLayout::Quad,
+        _ => panic!("use --camera-views=1|2|4"),
+    };
+    editor::launch(backend, arguments, camera_layout);
 }

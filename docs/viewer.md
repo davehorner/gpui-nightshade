@@ -71,3 +71,7 @@ The original agent plugin runs on the same worker-owned world used by the editor
 See the [feature-by-feature parity checklist](viewer-parity.md) for the distinction between exposed actions, GPUI workflows and live verification.
 
 Local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, broader render-mode validation, conversion UI, asset drag/drop and broader gizmo validation remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Shared-mode full-scene and resize/minimize checks pass on the RTX 4080; broader adapters, device recreation and visual automation remain incomplete.
+
+## Shared scene cameras
+
+Use **1 view**, **2 views**, **4 views** or Ctrl+Alt+1/2/4 to change camera tiles in the Viewport panel. `--camera-views=4` starts with four views. Click or scroll a tile to direct camera input to it. Scene edits, animation, selection and MCP remain shared. See [controls, implementation and limits](shared-cameras.md).

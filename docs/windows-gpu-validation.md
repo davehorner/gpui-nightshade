@@ -48,3 +48,7 @@ A longer native editor session exposed a scheduling cycle after 3,774 publicatio
 The acceptance script's `-StaticScene` option keeps the initial model instead of switching to animated Fox, making idle progress testable without animation or input. It still requires the publication/Present thresholds, a loaded scene and clean GPU logs. Default acceptance continues checking both models and advancing animation.
 
 After adding polling, the static-scene check `-Frames 5000 -StaticScene -Port 19873` passed with **5,008 publications and 6,000 successful Present submissions**, zero animation clips and no CPU fallback (`target/shared-validation/20261125-041524/report.json`). No input or animation was needed to maintain progress. This is an idle-retirement progress result on the same adapter, not a release FPS or VRAM benchmark.
+
+## Animated shared-camera rendering
+
+Native DirectX 12 regressions now verify visible morph deformation and continuously playing AnimatedMorphCube pixels in each of four camera tiles. The investigation found that the pinned wgpu 29 DirectX 12 indirect-count path loses emulated vertex/instance base offsets. Patch `0007-dx12-indirect-builtins.patch` selects the existing non-count indirect fallback on DirectX 12. GPU culling remains enabled. Feature negotiation has a DirectX 12/Vulkan unit regression; fallback performance and broader adapters have not been benchmarked. See [shared cameras](shared-cameras.md).

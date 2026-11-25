@@ -14,4 +14,8 @@ nightshade-platform = { path = "../../upstream/nightshade/crates/plugins/describ
 nightshade-graphics = { path = "../../upstream/nightshade/crates/plugins/domain/nightshade-graphics" }
 nightshade-camera = { path = "../../upstream/nightshade/crates/plugins/domain/nightshade-camera" }
 nightshade-camera-controller = { path = "../../upstream/nightshade/crates/plugins/domain/nightshade-camera-controller" }
+nightshade-scene = { path = "../../upstream/nightshade/crates/plugins/describe/nightshade-scene" }
 pollster.workspace = true
+
+[dev-dependencies]
+nightshade-render.workspace = true

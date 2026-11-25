@@ -237,6 +237,17 @@ pub trait ViewportHost {
         Ok(())
     }
     fn set_camera(&mut self, pose: CameraPose);
+    /// Optional same-scene camera layout; simple scene hosts retain one view.
+    fn set_camera_layout(
+        &mut self,
+        layout: crate::views::CameraLayout,
+        _active: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if layout != crate::views::CameraLayout::Single {
+            return Err("this scene host does not support shared camera views".into());
+        }
+        Ok(())
+    }
     fn pointer_input(&mut self, _input: crate::input::PointerInput) {}
     fn request_pick(&mut self, x: u32, y: u32);
     fn poll_pick(&mut self) -> Option<Option<u32>>;

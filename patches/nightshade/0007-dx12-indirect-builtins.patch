@@ -1,0 +1,90 @@
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
+@@ -59,7 +59,13 @@
+ ) -> DeviceConfig {
+     let mut required_features = wgpu::Features::INDIRECT_FIRST_INSTANCE;
+ 
+-    if adapter_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT) {
++    // wgpu 29's DX12 count-buffer indirect path resets the emulated vertex /
++    // instance base constants to zero. Mesh morph lookup and instance selection
++    // require those built-ins to include their indirect base offsets. Use the
++    // validated non-count indirect path until the backend supports them here.
++    if adapter_info.backend != wgpu::Backend::Dx12
++        && adapter_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
++    {
+         required_features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+     }
+ 
+@@ -923,3 +929,43 @@
+         name: info.name.clone(),
+     }
+ }
++
++#[cfg(test)]
++mod indirect_feature_tests {
++    use super::*;
++    #[test]
++    fn dx12_uses_offset_correct_indirect_draws_without_changing_vulkan_features() {
++        let mut info = wgpu::AdapterInfo {
++            name: "test".into(),
++            vendor: 0,
++            device: 0,
++            device_type: wgpu::DeviceType::Other,
++            device_pci_bus_id: String::new(),
++            driver: String::new(),
++            driver_info: String::new(),
++            backend: wgpu::Backend::Dx12,
++            subgroup_min_size: 0,
++            subgroup_max_size: 0,
++            transient_saves_memory: false,
++        };
++        let features =
++            wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
++        let dx12 = negotiate_device_config(features, &wgpu::Limits::default(), &info);
++        assert!(
++            dx12.required_features
++                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
++        );
++        assert!(
++            !dx12
++                .required_features
++                .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
++        );
++        info.backend = wgpu::Backend::Vulkan;
++        let vulkan = negotiate_device_config(features, &wgpu::Limits::default(), &info);
++        assert!(
++            vulkan
++                .required_features
++                .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
++        );
++    }
++}
+--- a/crates/plugins/draw/nightshade-wgpu-debug/src/systems/lines.rs
++++ b/crates/plugins/draw/nightshade-wgpu-debug/src/systems/lines.rs
+@@ -160,6 +160,7 @@
+ }
+ 
+ pub struct LinesPass {
++    supports_indirect_count: bool,
+     culling_enabled: bool,
+     vertex_buffer: wgpu::Buffer,
+     index_buffer: wgpu::Buffer,
+@@ -492,6 +493,9 @@
+         );
+ 
+         Self {
++            supports_indirect_count: device
++                .features()
++                .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT),
+             culling_enabled: false,
+             vertex_buffer,
+             index_buffer,
+@@ -887,7 +891,7 @@
+         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+ 
+         if culling_enabled {
+-            if cfg!(target_os = "macos") || cfg!(target_arch = "wasm32") {
++            if !self.supports_indirect_count {
+                 render_pass.multi_draw_indexed_indirect(&self.draw_commands_buffer, 0, total_lines);
+             } else {
+                 render_pass.multi_draw_indexed_indirect_count(

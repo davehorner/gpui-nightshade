@@ -11,6 +11,8 @@ use std::{
 };
 pub use viewer::core::*;
 
+mod views;
+
 const FRONTEND_CAPACITY: usize = 256;
 #[derive(Clone, Default)]
 pub struct ViewerConnection {
@@ -37,7 +39,7 @@ pub struct ViewerRuntime {
     frame: nightshade_wgpu::WgpuFrameRenderer,
     connection: ViewerConnection,
     pick_pending: bool,
-    last_pose: Option<CameraPose>,
+    views: views::SharedViews,
     reported_selection: Option<Option<u32>>,
     // Log guards and other plugin-owned objects must outlive all schedules/renderer work.
     _kept_alive: Vec<Box<dyn std::any::Any>>,
@@ -86,7 +88,11 @@ impl ViewerRuntime {
             frame,
             connection,
             pick_pending: false,
-            last_pose: None,
+            views: views::SharedViews {
+                width,
+                height,
+                ..Default::default()
+            },
             reported_selection: None,
             _kept_alive: kept_alive,
         };
@@ -111,6 +117,7 @@ impl ViewerRuntime {
         nightshade_window::run::advance_timing(&mut self.world.resources);
         self.world.increment_tick();
         self.stages.run_systems(&mut self.world);
+        self.views.after_scene(&mut self.world);
     }
     fn draw_frame(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.frame
@@ -155,7 +162,7 @@ impl ViewportHost for ViewerRuntime {
         Ok(())
     }
     fn set_camera(&mut self, pose: CameraPose) {
-        let previous = self.last_pose.replace(pose);
+        let previous = self.views.poses[self.views.active].replace(pose);
         let Some(previous) = previous else {
             return;
         };
@@ -176,6 +183,14 @@ impl ViewportHost for ViewerRuntime {
             orbit.target_focus += nightshade::prelude::nalgebra_glm::Vec3::from(pose.target)
                 - nightshade::prelude::nalgebra_glm::Vec3::from(previous.target);
         }
+    }
+    fn set_camera_layout(
+        &mut self,
+        layout: gpui_nightshade::views::CameraLayout,
+        active: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.views.configure(&mut self.world, layout, active);
+        Ok(())
     }
     fn pointer_input(&mut self, event: gpui_nightshade::input::PointerInput) {
         apply_pointer_input(&mut self.world, event);
@@ -201,6 +216,9 @@ impl ViewportHost for ViewerRuntime {
     }
     fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
         self.frame.renderer.set_owned_output(width, height)?;
+        self.views.width = width;
+        self.views.height = height;
+        self.views.publish_layout(&mut self.world);
         self.world
             .res_mut::<nightshade_platform::contract::window::Window>()
             .cached_viewport_size = Some((width, height));

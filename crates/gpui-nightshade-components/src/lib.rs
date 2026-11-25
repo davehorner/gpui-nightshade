@@ -23,3 +23,5 @@ pub use gpui_nightshade::presentation::{
     AlphaMode, BackendPreference, ColorSpace, FrameId, FrameInfo, PresentationBackend,
     PresentationCapabilities, PresentationStatus,
 };
+
+pub use gpui_nightshade::views::CameraLayout;

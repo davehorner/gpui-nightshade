@@ -6,7 +6,10 @@ use gpui_kit::component::{
 };
 use std::{cell::Cell, rc::Rc};
 
-actions!(nightshade_editor, [OpenCommandPalette]);
+actions!(
+    nightshade_editor,
+    [OpenCommandPalette, SingleCamera, SplitCameras, QuadCameras]
+);
 
 #[derive(Clone)]
 enum EditorCommand {

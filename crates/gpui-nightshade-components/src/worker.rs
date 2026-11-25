@@ -15,6 +15,8 @@ use std::{
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct ViewRequest {
+    pub layout: gpui_nightshade::views::CameraLayout,
+    pub active_view: usize,
     pub width: u32,
     pub height: u32,
     pub yaw: f32,
@@ -57,6 +59,8 @@ impl Worker {
                 selected: None,
                 input: Default::default(),
                 request: ViewRequest {
+                    layout: Default::default(),
+                    active_view: 0,
                     width: 640,
                     height: 480,
                     yaw: 0.6,
@@ -436,9 +440,10 @@ fn run(
                 distance: request.distance,
                 target: request.target,
             };
-            if last_camera != Some(camera) {
+            host.set_camera_layout(request.layout, request.active_view)?;
+            if last_camera != Some((camera, request.active_view)) {
                 host.set_camera(camera);
-                last_camera = Some(camera);
+                last_camera = Some((camera, request.active_view));
             }
             if let Some((x, y, sequence)) = request.pick
                 && pick_sequence != Some(sequence)

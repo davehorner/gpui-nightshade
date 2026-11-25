@@ -846,6 +846,21 @@ impl Render for Editor {
                 }
                 cx.stop_propagation();
             }))
+            .on_action(cx.listener(|view, _: &commands::SingleCamera, _, cx| {
+                view.viewport.update(cx, |v, cx| {
+                    v.set_camera_layout(gpui_nightshade_components::CameraLayout::Single, cx)
+                });
+            }))
+            .on_action(cx.listener(|view, _: &commands::SplitCameras, _, cx| {
+                view.viewport.update(cx, |v, cx| {
+                    v.set_camera_layout(gpui_nightshade_components::CameraLayout::Split, cx)
+                });
+            }))
+            .on_action(cx.listener(|view, _: &commands::QuadCameras, _, cx| {
+                view.viewport.update(cx, |v, cx| {
+                    v.set_camera_layout(gpui_nightshade_components::CameraLayout::Quad, cx)
+                });
+            }))
             .on_action(
                 cx.listener(|view, _: &commands::OpenCommandPalette, window, cx| {
                     view.open_commands(window, cx);
@@ -914,6 +929,36 @@ impl Render for Editor {
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.dock.reset(window, cx);
                             })),
+                    )
+                    .children(
+                        [
+                            (
+                                "views-1",
+                                "1 view",
+                                gpui_nightshade_components::CameraLayout::Single,
+                            ),
+                            (
+                                "views-2",
+                                "2 views",
+                                gpui_nightshade_components::CameraLayout::Split,
+                            ),
+                            (
+                                "views-4",
+                                "4 views",
+                                gpui_nightshade_components::CameraLayout::Quad,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(id, label, layout)| {
+                            Button::new(id).label(label).on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.viewport.update(cx, |viewport, cx| {
+                                        viewport.set_camera_layout(layout, cx)
+                                    });
+                                    cx.notify();
+                                },
+                            ))
+                        }),
                     )
                     .child(self.action_button("open", "Open model", Action::ImportFile, cx))
                     .child(self.action_button(
@@ -1046,7 +1091,11 @@ impl Render for Editor {
             )
     }
 }
-pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
+pub fn launch(
+    backend: BackendPreference,
+    arguments: ViewerArguments,
+    camera_layout: gpui_nightshade_components::CameraLayout,
+) {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
@@ -1060,6 +1109,23 @@ pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
                 commands::OpenCommandPalette,
                 Some("NightshadeEditor"),
             )]);
+            cx.bind_keys([
+                KeyBinding::new(
+                    "ctrl-alt-1",
+                    commands::SingleCamera,
+                    Some("NightshadeEditor"),
+                ),
+                KeyBinding::new(
+                    "ctrl-alt-2",
+                    commands::SplitCameras,
+                    Some("NightshadeEditor"),
+                ),
+                KeyBinding::new(
+                    "ctrl-alt-4",
+                    commands::QuadCameras,
+                    Some("NightshadeEditor"),
+                ),
+            ]);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
             let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
             gpui_kit::open_window(
@@ -1082,7 +1148,10 @@ pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
                             )
                         });
                     let viewport = cx.new(|cx| {
-                        NightshadeViewport::from_factory(backend, factory, cx).with_scene_input()
+                        let mut viewport = NightshadeViewport::from_factory(backend, factory, cx)
+                            .with_scene_input();
+                        viewport.set_camera_layout(camera_layout, cx);
+                        viewport
                     });
                     cx.new(|cx| Editor::new(viewport, connection, window, cx))
                 },

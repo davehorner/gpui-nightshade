@@ -12,6 +12,10 @@ Changes are isolated to nightshade-wgpu: optional-surface initialization retaini
 
 `0005-mcp-transform-batches.patch` adds bounded, prevalidated transform batches through the shared inspector mutation helper. A batch records one grouped history edit and returns all post-edit transforms. HTTP regressions cover invalid/duplicate targets, numeric overflow, no partial writes and grouped undo/redo. Procedural clients can use this tool for synchronized updates; the [cinematic example](../examples/mcp-cinematic/README.md) now uses native animation clips for its object/camera tracks and MCP morph controls.
 
+`0006-frontend-camera-access.patch` exposes the persistent editor camera and registers frontend camera names in the existing viewer snapshot. This lets camera tiles share native camera discovery without exposing private viewer resources.
+
+`0007-dx12-indirect-builtins.patch` disables the pinned wgpu 29 DirectX 12 indirect-count feature to retain correct vertex/instance base builtins through the existing indirect fallback. This fixes visible morph deformation in the bundled animated cube; rendered-pixel regressions cover explicit weights and playing clips in all four cameras. Vulkan negotiation remains unchanged and has a unit regression. See [shared cameras](shared-cameras.md).
+
 ## GPUI
 
 `patches/gpui/0001-shared-external-images.patch` is a reviewable diff against the pristine `gpui-pre` and `gpui-pre-windows` 0.3.14 source exports. Paths are relative to `upstream/gpui-snapshot`; the source changes are already applied there. Export provenance is Zed `f126950f9d3b62666f97437ae5d4ccac2272c4db`, as declared by those published packages. Root Cargo patches select the local exports. Their normalized manifests are kept so the exact matching registry family remains usable without cloning the entire Zed dependency workspace.

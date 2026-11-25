@@ -1,0 +1,33 @@
+--- a/apps/viewer/src/core.rs
++++ b/apps/viewer/src/core.rs
+@@ -231,6 +231,30 @@
+     viewer.history.frame += 1;
+ }
+ 
++/// The persistent navigation camera owned by the viewer, independent of imported models.
++pub fn editor_camera(world: &World) -> Option<Entity> {
++    world
++        .res::<crate::resources::ViewerResources>()
++        .camera_input
++        .viewer_camera
++}
++
++/// Include a frontend-owned camera in the existing camera snapshot and MCP catalogue.
++/// Camera entities remain owned by the caller and are not exported with model roots.
++pub fn register_frontend_camera(world: &mut World, entity: Entity, name: String) -> bool {
++    if !world
++        .storage
++        .has::<nightshade_camera::components::Camera>(entity)
++    {
++        return false;
++    }
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    if !viewer.model.cameras.iter().any(|(held, _)| *held == entity) {
++        viewer.model.cameras.push((entity, name));
++    }
++    true
++}
++
+ pub fn request_pick(world: &mut World, x: u32, y: u32) {
+     let viewer = world.res_mut::<crate::resources::ViewerResources>();
+     viewer.picking.click_wanted = Some(nightshade::prelude::nalgebra_glm::vec2(x as f32, y as f32));

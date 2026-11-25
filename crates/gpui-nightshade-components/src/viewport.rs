@@ -8,6 +8,7 @@ pub struct NightshadeViewport {
     image: Option<ViewportFrame>,
     diagnostics: String,
     request: ViewRequest,
+    camera_poses: [[f32; 6]; 4],
     last_pointer: Option<Point<Pixels>>,
     drag_button: Option<MouseButton>,
     scene_input: bool,
@@ -55,6 +56,8 @@ impl NightshadeViewport {
             image: None,
             diagnostics: "Initializing".into(),
             request: ViewRequest {
+                layout: Default::default(),
+                active_view: 0,
                 width: 640,
                 height: 480,
                 yaw: 0.6,
@@ -63,6 +66,7 @@ impl NightshadeViewport {
                 target: [0.; 3],
                 pick: None,
             },
+            camera_poses: [[0.6, 0.35, 4., 0., 0., 0.]; 4],
             last_pointer: None,
             drag_button: None,
             scene_input: false,
@@ -73,6 +77,50 @@ impl NightshadeViewport {
             pick_sequence: 0,
             focus: cx.focus_handle(),
             poll_task: None,
+        }
+    }
+    pub fn camera_layout(&self) -> crate::CameraLayout {
+        self.request.layout
+    }
+    pub fn set_camera_layout(&mut self, layout: crate::CameraLayout, cx: &mut Context<Self>) {
+        self.cancel_input();
+        self.request.layout = layout;
+        self.focus_view(0);
+        self.worker.request(self.request);
+        cx.notify();
+    }
+    fn focus_view(&mut self, index: usize) {
+        if index == self.request.active_view {
+            return;
+        }
+        self.camera_poses[self.request.active_view] = [
+            self.request.yaw,
+            self.request.pitch,
+            self.request.distance,
+            self.request.target[0],
+            self.request.target[1],
+            self.request.target[2],
+        ];
+        self.request.active_view = index;
+        let p = self.camera_poses[index];
+        self.request.yaw = p[0];
+        self.request.pitch = p[1];
+        self.request.distance = p[2];
+        self.request.target = [p[3], p[4], p[5]];
+        self.request.pick = None;
+    }
+    fn focus_at(&mut self, position: Point<Pixels>) {
+        if let Some(p) = self.local_position(position, false)
+            && let Some(index) =
+                self.request
+                    .layout
+                    .hit(self.request.width, self.request.height, p[0], p[1])
+        {
+            if index != self.request.active_view {
+                self.cancel_input();
+                self.focus_view(index);
+            }
+            self.worker.request(self.request);
         }
     }
     /// Owned snapshot of the actual transport, adapter, visibility and failures.
@@ -260,6 +308,7 @@ impl Render for NightshadeViewport {
         let paint_entity = entity.clone();
         div()
             .id("nightshade-viewport")
+            .relative()
             .track_focus(&self.focus)
             .flex()
             .flex_col()
@@ -277,6 +326,7 @@ impl Render for NightshadeViewport {
                 let Some(point) = this.local_position(event.position, false) else {
                     return;
                 };
+                this.focus_at(event.position);
                 window.focus(&this.focus, cx);
                 this.drag_button = Some(event.button);
                 this.last_pointer = Some(event.position);
@@ -319,6 +369,7 @@ impl Render for NightshadeViewport {
                 }
             }))
             .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
+                this.focus_at(event.position);
                 let delta = event.delta.pixel_delta(px(16.)).y;
                 this.request.distance =
                     (this.request.distance * (-f32::from(delta) * 0.003).exp()).clamp(0.5, 100.);
@@ -341,6 +392,12 @@ impl Render for NightshadeViewport {
                                 (f32::from(bounds.size.width) * scale).round().max(1.) as u32;
                             this.request.height =
                                 (f32::from(bounds.size.height) * scale).round().max(1.) as u32;
+                            let count = this
+                                .request
+                                .layout
+                                .rects(this.request.width, this.request.height)
+                                .len();
+                            this.focus_view(this.request.active_view.min(count - 1));
                             this.worker.request(this.request);
                         });
                     },
@@ -381,6 +438,36 @@ impl Render for NightshadeViewport {
                 )
                 .w_full()
                 .flex_1(),
+            )
+            .children(
+                self.request
+                    .layout
+                    .rects(self.request.width, self.request.height)
+                    .into_iter()
+                    .enumerate()
+                    .filter(|_| self.request.layout != crate::CameraLayout::Single)
+                    .map(|(index, rect)| {
+                        div()
+                            .absolute()
+                            .left(px(rect.x as f32 / self.scale))
+                            .top(px(rect.y as f32 / self.scale))
+                            .text_xs()
+                            .px_2()
+                            .bg(rgb(if index == self.request.active_view {
+                                0x285f9e
+                            } else {
+                                0x202733
+                            }))
+                            .child(format!(
+                                "Camera {}{}",
+                                index + 1,
+                                if index == self.request.active_view {
+                                    " active"
+                                } else {
+                                    ""
+                                }
+                            ))
+                    }),
             )
             .child(div().text_xs().p_1().child(self.diagnostics.clone()))
     }

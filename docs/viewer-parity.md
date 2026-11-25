@@ -24,7 +24,7 @@ Reference: pinned Nightshade trunk `630c74c973f1f1e047123f2fb3090be5a26ba6b9`, n
 | Keyboard shortcuts | Palette, import/assets/history, framing, W/E/R, playback, output and deletion | Remaining native interface/browser/navigation bindings |
 | Dockable panels | Scene/viewport/inspector/animation, split/tab/reset/save/restore | Dedicated material/camera/asset/render/console arrangements; current inspector combines several roles |
 | Console/diagnostics | Status text and structured viewport inspection API | Dedicated panel and full timing/memory counters |
-| Multiple viewports | Independent-world demo | Multiple editor cameras into one scene |
+| Multiple viewports | One/two/four cameras sharing the editor scene; independent orbit, picking and animated-pixel GPU regressions | Independently dockable camera panels and pose/layout persistence |
 
 ## Latest parity work
 
