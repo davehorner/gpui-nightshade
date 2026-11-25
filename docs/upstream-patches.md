@@ -10,6 +10,8 @@ Changes are isolated to nightshade-wgpu: optional-surface initialization retaini
 
 `0004-mcp-alignment.patch` aligns the existing native MCP tools with inspector transform/material/light history, preserves selection for targeted edits, reports tool failures accurately, validates arguments and bounds, expires unstarted calls, and adds animation/morph controls. Protocol, schema, queue and native HTTP regressions cover errors and frontend-world undo/redo. See [MCP contract](mcp.md). The existing legacy HTTP endpoint and protocol version are preserved.
 
+`0005-mcp-transform-batches.patch` adds bounded, prevalidated transform batches through the shared inspector mutation helper. A batch records one grouped history edit and returns all post-edit transforms. HTTP regressions cover invalid/duplicate targets, numeric overflow, no partial writes and grouped undo/redo. The [cinematic example](../examples/mcp-cinematic/README.md) uses this tool to update its camera and cast in one scene stage.
+
 ## GPUI
 
 `patches/gpui/0001-shared-external-images.patch` is a reviewable diff against the pristine `gpui-pre` and `gpui-pre-windows` 0.3.14 source exports. Paths are relative to `upstream/gpui-snapshot`; the source changes are already applied there. Export provenance is Zed `f126950f9d3b62666f97437ae5d4ccac2272c4db`, as declared by those published packages. Root Cargo patches select the local exports. Their normalized manifests are kept so the exact matching registry family remains usable without cloning the entire Zed dependency workspace.

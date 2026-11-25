@@ -14,7 +14,7 @@ foreach ($entry in $pins.GetEnumerator()) {
     if ($actual -ne $entry.Value) { throw "Wrong $($entry.Key) revision: $actual" }
 }
 if (!$VerifyOnly) {
-    foreach ($patch in @('0001-external-output.patch', '0002-embedded-viewer-core.patch', '0003-deferred-spawn-selection.patch', '0004-mcp-alignment.patch')) {
+    foreach ($patch in @('0001-external-output.patch', '0002-embedded-viewer-core.patch', '0003-deferred-spawn-selection.patch', '0004-mcp-alignment.patch', '0005-mcp-transform-batches.patch')) {
         $patchPath = "../../patches/nightshade/$patch"
         git -C upstream/nightshade apply --check $patchPath 2>$null
         if ($LASTEXITCODE -eq 0) {git -C upstream/nightshade apply $patchPath}

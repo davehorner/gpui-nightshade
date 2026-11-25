@@ -1,0 +1,223 @@
+diff --git a/apps/viewer/src/commands/agent.rs b/apps/viewer/src/commands/agent.rs
+--- a/apps/viewer/src/commands/agent.rs
++++ b/apps/viewer/src/commands/agent.rs
+@@ -11,7 +11,8 @@
+     ALPHA_LABELS, AnimationArgs, CameraArgs, ClipArgs, EntityArgs, ExportArgs, GizmoArgs,
+     GizmoMode, LayerArgs, LayerWeightArgs, LightArgs, LightField, LightWriteArgs, MaterialArgs,
+     MaterialField, MorphWeightArgs, NameArgs, PageArgs, PathArgs, PrimitiveArgs, RenameArgs,
+-    RenderArgs, ScreenshotArgs, SelectArgs, SlugArgs, TransformArgs, ViewerAction, VisibleArgs,
++    RenderArgs, ScreenshotArgs, SelectArgs, SlugArgs, TransformArgs, TransformsArgs, ViewerAction,
++    VisibleArgs,
+ };
+ use crate::queries::agent::{
+     animation_state, json_header, library, light_kind, light_of, material_names, material_of,
+@@ -218,6 +219,44 @@
+                 args.scale,
+             )?;
+             transform_of(storage, entity)
++        }
++        "set_transforms" => {
++            let args: TransformsArgs = take_arguments(arguments)?;
++            if args.transforms.is_empty() || args.transforms.len() > 128 {
++                return Err("a transform batch must contain 1 to 128 entries".into());
++            }
++            let mut seen = std::collections::HashSet::new();
++            let mut targets = Vec::with_capacity(args.transforms.len());
++            for edit in &args.transforms {
++                if !seen.insert(edit.entity) {
++                    return Err("a transform batch cannot repeat an entity".into());
++                }
++                let entity = resolve(storage, edit.entity)?;
++                transform_of(storage, entity)?;
++                targets.push(entity);
++            }
++            let mut results = Vec::with_capacity(targets.len());
++            let mut history = Vec::new();
++            for (edit, entity) in args.transforms.into_iter().zip(targets) {
++                if let Some(change) = crate::commands::selection::update_transform(
++                    stage.viewer,
++                    storage,
++                    entity,
++                    edit.translation,
++                    edit.rotation,
++                    edit.scale,
++                )? {
++                    history.push(change);
++                }
++                results.push(transform_of(storage, entity)?);
++            }
++            if !history.is_empty() {
++                crate::commands::history::push(
++                    &mut stage.viewer.history,
++                    crate::resources::Edit::Transforms(history),
++                );
++            }
++            Ok(json!({"transforms": results}))
+         }
+         "get_material" => {
+             let args: EntityArgs = take_arguments(arguments)?;
+diff --git a/apps/viewer/src/commands/selection.rs b/apps/viewer/src/commands/selection.rs
+--- a/apps/viewer/src/commands/selection.rs
++++ b/apps/viewer/src/commands/selection.rs
+@@ -205,6 +205,21 @@
+     rotation: Option<[f32; 3]>,
+     scale: Option<[f32; 3]>,
+ ) -> Result<(), String> {
++    if let Some(edit) = update_transform(viewer, storage, entity, translation, rotation, scale)? {
++        push(&mut viewer.history, Edit::Transforms(vec![edit]));
++    }
++    Ok(())
++}
++
++/// Validated transform mutation; lets callers group edits into one history entry.
++pub fn update_transform(
++    viewer: &mut ViewerResources,
++    storage: &mut nightshade::ecs::Storage,
++    entity: Entity,
++    translation: Option<[f32; 3]>,
++    rotation: Option<[f32; 3]>,
++    scale: Option<[f32; 3]>,
++) -> Result<Option<TransformEdit>, String> {
+     if [translation, rotation, scale]
+         .into_iter()
+         .flatten()
+@@ -230,17 +245,11 @@
+     if viewer.selection.selected == Some(entity) {
+         read_transform(&mut viewer.selection, transform);
+     }
+-    if before != after {
+-        push(
+-            &mut viewer.history,
+-            Edit::Transforms(vec![TransformEdit {
+-                entity,
+-                before,
+-                after,
+-            }]),
+-        );
+-    }
+-    Ok(())
++    Ok((before != after).then_some(TransformEdit {
++        entity,
++        before,
++        after,
++    }))
+ }
+ 
+ pub fn restore_transform(
+diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
+--- a/apps/viewer/src/core.rs
++++ b/apps/viewer/src/core.rs
+@@ -363,6 +363,28 @@
+             ] {
+                 assert_eq!(raw_call(port, name, args)["isError"], true, "{name}");
+             }
++            let before_batch = call(port, "get_transform", json!({"entity":entity.id}));
++            for transforms in [
++                json!([]),
++                json!([{"entity":entity.id,"translation":[99,99,99]},{"entity":4294967295u32}]),
++                json!([{"entity":entity.id},{"entity":entity.id}]),
++                json!([{"entity":entity.id,"translation":[99,99,99]},{"entity":entity.id,"scale":[1e100,1,1]}]),
++            ] {
++                assert_eq!(
++                    raw_call(port, "set_transforms", json!({"transforms":transforms}))["isError"],
++                    true
++                );
++                assert_eq!(
++                    call(port, "get_transform", json!({"entity":entity.id})),
++                    before_batch
++                );
++            }
++            let batch = call(
++                port,
++                "set_transforms",
++                json!({"transforms":[{"entity":entity.id,"translation":[5,2,1]}]}),
++            );
++            assert_eq!(batch["transforms"][0], before_batch);
+             let material = call(port, "get_material", json!({"entity":entity.id}));
+             let changed = call(
+                 port,
+@@ -395,6 +417,35 @@
+             assert_eq!(call(port, "get_light", json!({"entity":light})), before);
+             call(port, "redo", json!({}));
+             assert_eq!(call(port, "get_light", json!({"entity":light})), changed);
++            let cube_before = call(port, "get_transform", json!({"entity":entity.id}));
++            let light_before = call(port, "get_transform", json!({"entity":light}));
++            let batch = call(
++                port,
++                "set_transforms",
++                json!({"transforms":[
++                    {"entity":entity.id,"translation":[7,4,2]},
++                    {"entity":light,"translation":[1,8,3]}
++                ]}),
++            );
++            assert_eq!(batch["transforms"].as_array().unwrap().len(), 2);
++            call(port, "undo", json!({}));
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":entity.id})),
++                cube_before
++            );
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":light})),
++                light_before
++            );
++            call(port, "redo", json!({}));
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":entity.id})),
++                batch["transforms"][0]
++            );
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":light})),
++                batch["transforms"][1]
++            );
+             call(port, "set_animation", json!({"blend_time":0.7}));
+             let animation = call(port, "get_animation", json!({}));
+             assert!((animation["blend_time"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+@@ -416,7 +467,7 @@
+         let state = snapshot(&app.world);
+         assert_eq!(result["translation"], json!([5., 2., 1.]));
+         assert_eq!(state.selection.name, "From MCP");
+-        assert_eq!(state.selection.translation, [5., 2., 1.]);
++        assert_eq!(state.selection.translation, [7., 4., 2.]);
+         assert!(
+             !app.world
+                 .resources
+diff --git a/apps/viewer/src/data.rs b/apps/viewer/src/data.rs
+--- a/apps/viewer/src/data.rs
++++ b/apps/viewer/src/data.rs
+@@ -615,6 +615,13 @@
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
+ #[serde(deny_unknown_fields)]
++pub struct TransformsArgs {
++    pub transforms: Vec<TransformArgs>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct MaterialArgs {
+     pub entity: u32,
+     pub base_color: Option<[f32; 4]>,
+diff --git a/apps/viewer/src/queries/agent.rs b/apps/viewer/src/queries/agent.rs
+--- a/apps/viewer/src/queries/agent.rs
++++ b/apps/viewer/src/queries/agent.rs
+@@ -8,7 +8,7 @@
+     GizmoArgs, GizmoMode, LIGHT_KIND_LABELS, LayerArgs, LayerWeightArgs, LightArgs, LightKind,
+     LightWriteArgs, MaterialArgs, MorphWeightArgs, NameArgs, PageArgs, PathArgs, PrimitiveArgs,
+     PrimitiveKind, RenameArgs, RenderArgs, RowKind, ScreenshotArgs, SelectArgs, SlugArgs,
+-    TransformArgs, VisibleArgs,
++    TransformArgs, TransformsArgs, VisibleArgs,
+ };
+ use crate::queries::material::view_by_name;
+ use crate::queries::picking::find_entity_by_id;
+@@ -58,6 +58,10 @@
+         tool::<TransformArgs>(
+             "set_transform",
+             "Write a node's position, rotation in degrees, or scale. What is left out is not changed.",
++        ),
++        tool::<TransformsArgs>(
++            "set_transforms",
++            "Apply 1 to 128 node transforms in one scene stage. Validates the entire batch before editing; duplicate targets are rejected. Returns post-edit transforms and shares inspector undo history.",
+         ),
+         tool::<EntityArgs>(
+             "get_material",
