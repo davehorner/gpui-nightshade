@@ -1,5 +1,6 @@
 mod animation;
 mod docking;
+mod file_drop;
 mod rendering;
 use animation::{WeightEditor, WeightTarget};
 use gpui_kit::base::Disableable;
@@ -818,12 +819,30 @@ impl Render for Editor {
         }
 
         div()
+            .id("nightshade-editor")
             .key_context("NightshadeEditor")
             .size_full()
             .flex()
             .flex_col()
             .bg(rgb(0x171a21))
             .text_color(rgb(0xdce4f2))
+            .drag_over::<ExternalPaths>(|style, paths, _, _| {
+                if file_drop::asset_path(paths.paths()).is_ok() {
+                    style.border_2().border_color(rgb(0x6c9fff))
+                } else {
+                    style
+                }
+            })
+            .on_drop(cx.listener(|view, paths: &ExternalPaths, _, cx| {
+                match file_drop::asset_path(paths.paths()) {
+                    Ok(path) => view.send(Action::OpenLibraryFile(path), cx),
+                    Err(message) => {
+                        view.message = message.into();
+                        cx.notify();
+                    }
+                }
+                cx.stop_propagation();
+            }))
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if view
                     .fields
