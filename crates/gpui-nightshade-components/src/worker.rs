@@ -424,14 +424,15 @@ fn run(
                 state.image = Some(image);
                 state.changed = true;
                 state.diagnostics = format!(
-                    "{} {:?} | asynchronous readback | {}x{} | {:.1} ms | {} dropped | {} KiB staging",
+                    "{} {:?} | asynchronous readback | {}x{} | {:.1} ms | {} dropped | {} KiB staging | frame {}",
                     host.renderer().gpu_profile.name,
                     host.renderer().gpu_profile.backend,
                     frame.width,
                     frame.height,
                     frame.latency.as_secs_f64() * 1000.,
                     ring.dropped,
-                    ring.allocated_bytes() / 1024
+                    ring.allocated_bytes() / 1024,
+                    frame.id.sequence
                 );
             }
         }
@@ -501,7 +502,9 @@ mod tests {
         });
         let mut worker = Worker::new(BackendPreference::Readback, factory);
         wait_for(&worker, |s| s.rendered_frames >= 2);
-        worker.set_visible(false);
+        let mut visibility = crate::visibility::PresentationVisibility::default();
+        visibility.set_window(false);
+        worker.set_visible(visibility.is_presented());
         wait_for(&worker, |s| s.hidden_ticks >= 2);
         let frames = worker.shared.0.lock().unwrap().rendered_frames;
         let mut request = worker.shared.0.lock().unwrap().request;
@@ -510,7 +513,13 @@ mod tests {
         worker.request(request);
         wait_for(&worker, |s| s.hidden_ticks >= 6);
         assert_eq!(worker.shared.0.lock().unwrap().rendered_frames, frames);
-        worker.set_visible(true);
+        visibility.set_panel(false);
+        visibility.set_window(true);
+        worker.set_visible(visibility.is_presented());
+        wait_for(&worker, |s| s.hidden_ticks >= 10);
+        assert_eq!(worker.shared.0.lock().unwrap().rendered_frames, frames);
+        visibility.set_panel(true);
+        worker.set_visible(visibility.is_presented());
         wait_for(&worker, |s| s.rendered_frames > frames);
         assert_eq!(constructions.load(Ordering::SeqCst), 1);
         worker.shutdown().unwrap().join().unwrap();

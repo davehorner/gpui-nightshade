@@ -10,7 +10,7 @@ pub struct NightshadeViewport {
     last_pointer: Option<Point<Pixels>>,
     drag_button: Option<MouseButton>,
     scene_input: bool,
-    visible: bool,
+    visibility: crate::visibility::PresentationVisibility,
     input_subscriptions: Option<Vec<Subscription>>,
     focus: FocusHandle,
     bounds: Bounds<Pixels>,
@@ -56,7 +56,7 @@ impl NightshadeViewport {
                     .await;
                 if view
                     .update(cx, |view, cx| {
-                        if view.visible && view.worker.has_update() {
+                        if view.visibility.is_presented() && view.worker.has_update() {
                             cx.notify();
                         }
                     })
@@ -82,7 +82,7 @@ impl NightshadeViewport {
             last_pointer: None,
             drag_button: None,
             scene_input: false,
-            visible: true,
+            visibility: Default::default(),
             input_subscriptions: None,
             bounds: Bounds::default(),
             scale: 1.,
@@ -96,15 +96,23 @@ impl NightshadeViewport {
         self.scene_input = true;
         self
     }
-    /// Suspend presentation while retaining the scene worker and simulation service.
+    /// Set container/panel visibility while retaining the scene worker and simulation.
+    /// Presentation also requires the owning platform window to be visible.
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if self.visible != visible {
-            self.visible = visible;
-            self.cancel_input();
-            self.request.pick = None;
-            self.worker.set_visible(visible);
-            cx.notify();
+        if self.visibility.set_panel(visible) {
+            self.apply_visibility(cx);
         }
+    }
+    fn set_window_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visibility.set_window(visible) {
+            self.apply_visibility(cx);
+        }
+    }
+    fn apply_visibility(&mut self, cx: &mut Context<Self>) {
+        self.cancel_input();
+        self.request.pick = None;
+        self.worker.set_visible(self.visibility.is_presented());
+        cx.notify();
     }
     fn local_position(&self, position: Point<Pixels>, captured: bool) -> Option<[f32; 2]> {
         gpui_nightshade::input::local_pointer(
@@ -212,9 +220,13 @@ impl Focusable for NightshadeViewport {
 }
 impl Render for NightshadeViewport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.set_window_visible(window.is_visible(), cx);
         if self.input_subscriptions.is_none() {
             let focus = self.focus.clone();
             self.input_subscriptions = Some(vec![
+                cx.observe_window_visibility(window, |view, visibility, _, cx| {
+                    view.set_window_visible(visibility.is_visible(), cx);
+                }),
                 cx.on_focus_out(&focus, window, |view, _, _, _| view.cancel_input()),
                 cx.observe_window_activation(window, |view, window, _| {
                     if !window.is_window_active() {
