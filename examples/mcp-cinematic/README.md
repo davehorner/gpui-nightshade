@@ -1,43 +1,60 @@
-# MCP cinematic choreography
+# Remote-first MCP model showcase
 
-A Python standard-library example that generates randomly sized and placed faceted crystals, loads them into the native viewer through MCP, then plays a real glTF animation clip containing staggered quintic tweens and the camera path. Each mesh has Expand and Twist morph targets; MCP animates the first crystal's two weights during playback. Colored faces use an embedded unlit material for predictable results across saved lighting settings. A free glTF camera follows a CatmullÃ¢â‚¬â€œRom dolly path with an establishing view, low pass, elevated reveal and close landing. It continually aims at the subjects.
+The default example uses actual animated assets. It presents two models sequentially in the same viewer:
 
-**This replaces the scene in the connected viewer.** Use a separate viewer instance for the demo. The final scene remains open; Ctrl+C freezes it at its current pose. No network assets, Blender, Python packages or API keys are needed.
+1. A random **animated morph model** from AnimatedMorphCube or AnimatedMorphSphere.
+2. A random **animated skinned model with a skeleton** from Fox or CesiumMan.
 
-From the repository root, start the editor:
+It tries every remote candidate and validates its GLB and required animation/morph/skin metadata before creating the available pools. A role uses local fallback only when its entire remote pool is unavailable. Fallbacks are validated cached downloads, the included AnimatedMorphCube, and Nightshade's bundled Fox, X Bot and Y Bot locomotion models. Only then does a seeded RNG choose one model per role and a native clip for each. Without `--seed`, a fresh random seed is generated and printed for replay. The same seed reproduces choices for the same available pools; different network availability can change the pools.
+
+**This replaces the connected scene twice.** Use a separate viewer instance. No Python packages or API keys are required. Remote models are downloaded into the ignored cache; original assets are preserved.
+
+From the repository root, start a viewer:
 
 ```powershell
 cargo run -p gpui-nightshade-viewer -- --agent-port=8791 --presentation=windows-shared
 ```
 
-Use `--presentation=readback` for the portable path. Keep the viewport visible during the demo. In a second terminal:
+Use `--presentation=readback` for the portable path. Keep the viewport visible. In a second terminal:
 
 ```powershell
-python examples/mcp-cinematic/cinematic.py
+python examples/mcp-cinematic/cinematic.py --seed 7
 ```
 
-Try a different cast or a longer camera move:
+`--duration` is the duration **of each act**. For example:
 
 ```powershell
-python examples/mcp-cinematic/cinematic.py --seed 42 --objects 10 --duration 40 --fps 20 --screenshot target/mcp-cinematic/finale.png
+python examples/mcp-cinematic/cinematic.py --seed 42 --duration 20 --fps 10 --screenshot target/mcp-cinematic/showcase.png
 ```
 
-`--shape box` or `--shape pyramid` changes the shared geometry (the default is `diamond`). `--url http://127.0.0.1:PORT/` selects another endpoint. The client initializes MCP, checks the tool catalogue, loads a generated self-contained glTF, waits for named nodes, disables turntable/gizmos/grid, and activates the imported camera. Imported camera transforms are independent of the editor's orbit controller. `play_clip` starts the native clip; `set_animation` configures time, speed, looping and blend duration. `get_animation` reads native progress. `set_morph_weight` deforms actual vertices, and `get_morph_weights` verifies the resulting weights. `toggle_playback` pauses if interrupted. The example requires the MCP tools installed by `scripts/init.ps1`.
+This writes `showcase-morph.png` and `showcase-skeleton.png`. Use fresh output paths. `--url http://127.0.0.1:PORT/` selects another viewer. `--asset-cache PATH` changes the download cache; `--download-timeout SECONDS` sets the network timeout (default 8 seconds). `--dry-run` resolves sources and prints the RNG choices without contacting MCP.
 
-The cast shares one mesh and material, with randomized proportions, spin and placement. Live checks exposed missing/incorrect draws for a scene containing several distinct meshes on the pinned renderer. Sharing geometry avoids that issue; this example does not change global GPU culling or batching settings. A stage mesh is deliberately omitted.
+## Animation, morphs and camera
 
-Object transforms and the camera path are baked into glTF translation, quaternion rotation and scale tracks at 30 samples per second. Nightshade's native animation player evaluates them at scene frame rate. The client sends no per-frame object/camera transform edits. It uses native clip time to drive two independent morph envelopes over MCP, verifies nonzero weights and camera movement, then leaves the final clip pose open. `--fps` caps MCP morph updates; it does not cap native animation/render frequency. Morph weights are intentionally not animated by the clip, so the animation system cannot overwrite MCP deformation edits. These animation/morph controls retain trunk's history behavior; no transform undo history is generated by streaming poses.
+The example retains the chosen model's original mesh, materials, joints, inverse bind matrices, skin weights and animation channels. It converts the self-contained GLB to an embedded glTF and appends a free camera without changing original node indices. Bind-pose scene bounds, including node transforms, scale the cinematic camera path to the model. This bound estimate does not account for all animated excursions.
 
+MCP `play_clip` starts the chosen native clip; `set_animation` configures randomized playback speed and looping. For the morph act, the original weight-animation clip plays first. In the last 35% of the act the client pauses playback and drives actual weights using `set_morph_weight`, then reads them with `get_morph_weights`. Pausing prevents the model's weight tracks from overwriting MCP edits.
 
-Edit `choreography()` to change the seeded cast, `object_pose()` for tween timings/spin, and `camera_pose()` for the path and target. The glTF is written to `target/mcp-cinematic/scene.gltf`; `--scene PATH` changes it. File paths are resolved on the client machine and must be accessible to the viewer on the same machine. With `--screenshot`, the client also queues a `-morph` capture while playback has verified nonzero deformation weights, then saves the final pose. Use fresh output paths.
+For the skeleton act, the native player drives the original skinned model and MCP enables the skeleton overlay. The source joint count and the selected native clip are printed. Skinning is evaluated on the GPU; unchanged ECS joint transforms are not used as a playback test. Camera dolly/orbit updates use MCP `set_transform`, independently of native model animation. `--fps` caps camera/morph MCP updates, not native animation/render frequency. The final model stays open; Ctrl+C pauses the current act.
 
-To generate the scene without connecting, or run the math/geometry checks:
+## Sources and local fallback credits
+
+- [AnimatedMorphCube](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/AnimatedMorphCube): Microsoft, CC0. A small original copy is included for offline fallback; see [assets/NOTICE.md](assets/NOTICE.md).
+- [AnimatedMorphSphere](https://github.com/KhronosGroup/glTF-Sample-Models/tree/master/2.0/AnimatedMorphSphere): original archived Khronos sample repository, including its source credits/license.
+- [Fox](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox): PixelMannen model (CC0), tomkranis rig/animation and AsoboStudio/scurest conversion (CC BY 4.0).
+- [CesiumMan](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/CesiumMan): source model credits/license apply.
+
+Bundled Nightshade fallbacks retain their existing upstream files and licenses. Downloads are validated and limited to 32 MiB each. Failed or malformed remote data does not replace a valid cached model.
+
+## Optional procedural demo and tests
+
+The earlier generated crystal/tween/native-clip demo is available explicitly:
 
 ```powershell
-python examples/mcp-cinematic/cinematic.py --dry-run
+python examples/mcp-cinematic/cinematic.py --procedural --seed 7 --objects 6
 python -m unittest discover -s examples/mcp-cinematic -p 'test_*.py'
 ```
 
-## Validation
+`--objects` and `--shape` apply only to that optional demo. The default uses downloaded or local actual model assets.
 
-A twelve-second shared-GPU native clip run completed 34 MCP morph updates and 122 tool calls including setup and captures. The client verified moving camera transforms and nonzero morph weights `[0.635, 0.332]` during playback. Live and final captures retained all six objects. Python tests verify real animation channels for every object and the camera, sample times/output counts, unit quaternions, nonzero morph deltas, camera aim, outward normals and deterministic tweens. The earlier transform-batch example's performance figures do not describe native clip playback.
+Tests cover remote-before-RNG ordering, deterministic choices, remote validation and local fallback, preservation of skin/animation data when adding a camera, and procedural geometry/animation checks. Live shared-GPU checks selected remote AnimatedMorphSphere + Fox and, with an empty cache and failed remote handshakes, bundled AnimatedMorphCube + Fox. Both acts loaded, played native clips, moved the camera and produced inspected engine captures. The local Fox contains 24 skin joints.

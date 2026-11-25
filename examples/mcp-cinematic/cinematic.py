@@ -362,7 +362,10 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8791/")
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--seed", type=int, help="Replay a run; otherwise generate and print a fresh random seed")
+    parser.add_argument("--procedural", action="store_true", help="Run the optional generated-crystal demo instead of real models")
+    parser.add_argument("--asset-cache", type=Path, default=Path("target/mcp-cinematic/model-cache"))
+    parser.add_argument("--download-timeout", type=float, default=8)
     parser.add_argument("--shape", choices=("diamond", "box", "pyramid"), default="diamond")
     parser.add_argument("--objects", type=int, default=6)
     parser.add_argument("--duration", type=float, default=24)
@@ -371,6 +374,10 @@ def main():
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--dry-run", action="store_true", help="Generate the scene without contacting MCP")
     args = parser.parse_args()
+    if args.seed is None:
+        args.seed = random.SystemRandom().randrange(2 ** 32)
+    if not math.isfinite(args.download_timeout) or not 0 < args.download_timeout <= 30:
+        parser.error("--download-timeout must be between zero and 30 seconds")
     if not 1 <= args.objects <= 32:
         parser.error("--objects must be between 1 and 32")
     if not math.isfinite(args.duration) or args.duration <= 0:
@@ -380,10 +387,14 @@ def main():
     if args.screenshot and args.screenshot.exists():
         parser.error("--screenshot must name a new file")
     try:
-        run(args)
+        if args.procedural:
+            run(args)
+        else:
+            import models
+            models.run(args)
     except KeyboardInterrupt:
         print("\nStopped; the viewer retains the last pose.")
-    except (RuntimeError, OSError, urllib.error.URLError) as error:
+    except (RuntimeError, OSError, ValueError, urllib.error.URLError) as error:
         parser.exit(1, f"Cinematic example failed: {error}\n")
 
 

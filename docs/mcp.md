@@ -35,4 +35,4 @@ Calls have a 20-second deadline and the pending queue is bounded to 256 entries.
 
 ## Cinematic example
 
-[The dependency-free Python example](../examples/mcp-cinematic/README.md) creates a seeded cast of faceted crystals with two real morph targets and a native glTF clip containing object tweens and cinematic camera tracks. MCP starts/configures playback, reads clip time, and drives and verifies vertex morph weights. It replaces the connected scene and leaves the final pose open. Nightshade evaluates the object/camera animation clip; the client evaluates only the independent morph envelopes.
+[The dependency-free Python example](../examples/mcp-cinematic/README.md) resolves actual animated models remotely first, falls back to validated cache/bundled models, and then uses seeded RNG selection. It presents an animated morph model and an animated skinned model sequentially, playing native clips, editing morph weights and moving the camera through MCP. Original skin/joint/animation data are preserved. The earlier procedural crystal demo is optional via `--procedural`.
