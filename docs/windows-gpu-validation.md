@@ -70,3 +70,21 @@ Unsuccessful GPU-wait and global-gate implementations were removed. The frozen p
 `windows::sampling_test::changing_shared_frames_sample_without_gpui_compositor` adds a separate native D3D11 fullscreen shader test. It uses the actual shared importer, rotates the cube camera, draws into a private 1351×715 render target, and waits for each consumer completion before reusing the allocation. A 600-frame DX12/D3D11 run passed and verified 42 distinct output colors. This is serialized shader-sampling validation, with no GPUI atlas, window or swapchain; it does not prove concurrent full-viewer presentation. Set `SHARED_SAMPLING_FRAMES` to change its default 120-frame duration.
 
 The compositor now obtains the shader view and matching synchronization owner under one atlas lock and unbinds shared SRVs before signaling completion. Fresh visible runs still failed with those changes. The next isolation boundary is pipelined native sampling versus GPUI atlas/swapchain presentation; the production blocker remains open and readback remains the default.
+
+## Pipelined sampling isolation (2026-11-25)
+
+`just test-sampling` now runs serialized cube, three-slot cube, and three-slot full-viewer sampling tests. `SHARED_SAMPLING_FRAMES` controls their duration (120 by default). The full-viewer test disables agents, settings persistence and remote catalogs and waits for the default model to load through the real viewer schedules. Its viewer-core dependency is test-only.
+
+The pipelined tests retain imported frames, textures, shader views and synchronization owners until the oldest consumer fence retires. A test-only fence gate holds the first three draws pending simultaneously, asserts that all three slots are unavailable with no consumer completion, and then releases them. The gate releases during unwinding as well. Subsequent production work is submitted while earlier consumer reads may still execute. All three allocations must be exercised. GPU recipes now run serially to avoid independent GPU regressions contending with this workload.
+
+Observed on the same RTX 4080/debug configuration at 1351×715:
+
+| Native sampling configuration | Result |
+| --- | --- |
+| Three-slot moving-camera cube, original point-sampling shader | 1,200 frames passed |
+| Three-slot full viewer, original point-sampling shader | 1,200 frames passed; 15,599 output colors |
+| Serialized moving-camera cube, vertex-stage dimensions + linear pixel sampling | 600 frames passed; 42 output colors |
+| Gated three-slot moving-camera cube, vertex-stage dimensions + linear pixel sampling | 600 frames passed; 42 output colors |
+| Gated three-slot full viewer, vertex-stage dimensions + linear pixel sampling | 600 frames passed; 15,599 output colors |
+
+The latter shader binds the shared SRV to both vertex and pixel stages, queries its dimensions in the vertex shader, and uses the same linear/wrap sampler choices as GPUI. It is still a small fullscreen shader, not GPUI's actual polychrome sprite shader. These tests exercise overlapping GPU work and the full viewer's producer workload without a GPUI atlas, swapchain, or worker/UI thread split. They narrow the next investigation to those remaining differences; they neither identify a root cause nor validate visible presentation. The production path and default presentation choice are unchanged.

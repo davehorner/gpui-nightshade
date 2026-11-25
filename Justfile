@@ -17,8 +17,11 @@ test-core:
     cargo test --manifest-path upstream/nightshade/Cargo.toml -p viewer --lib core::tests --locked --target-dir target/upstream-check
 
 test-gpu:
-    cargo test -p gpui-nightshade --locked -- --include-ignored
-    cargo test -p gpui-nightshade-components --locked -- --include-ignored
+    cargo test -p gpui-nightshade --locked -- --include-ignored --test-threads=1
+    cargo test -p gpui-nightshade-components --locked -- --include-ignored --test-threads=1
+
+test-sampling:
+    cargo test -p gpui-nightshade-components windows::sampling_test --locked -- --ignored --nocapture --test-threads=1
 
 test-shared frames="1200" port="19790":
     cargo build -p gpui-nightshade-viewer --locked

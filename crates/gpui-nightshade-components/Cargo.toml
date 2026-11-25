@@ -10,6 +10,7 @@ gpui-kit = { path = "../../upstream/gpui-component/crates/kit" }
 image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
+nightshade-viewer-core = { path = "../nightshade-viewer-core" }
 pollster.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
