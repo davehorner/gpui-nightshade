@@ -20,6 +20,8 @@ The inspector exposes transforms/name, visibility/delete, base color RGBA, metal
 
 Material controls also include Opaque/Mask/Blend/Dither alpha modes, alpha cutoff, normal scale, occlusion strength, specular factor, volume thickness, dispersion, clearcoat factor/roughness, sheen roughness and iridescence factor/IOR. Numeric labels show trunk's supported ranges; apply with Enter. Nonfinite and out-of-range advanced values are rejected. Values refresh from the effective scene snapshot while preserving a focused field. Reset Material and Undo/Redo use trunk's existing material history. These expose the existing trunk controls; additional glTF extension fields and texture slots beyond trunk's editable contract are not added here.
 
+Invalid advanced values report the field name and its accepted range in the status message. MCP `get_material` includes every advanced scalar so remote validation can inspect effective values after UI edits.
+
 Point/spot lights can be created from the toolbar. Light inspectors expose RGB, intensity, range, cone angles in degrees and shadows. Light-marker materials are hidden so the actual light controls remain accessible. Selected cameras expose perspective FOV, near/far clipping and camera activation; perspective far clip zero means infinite. A button restores the editor camera.
 
 Playback controls include clip selection, play/pause, stop, seek, positive speed, looping and blend duration. Each clip can be added as a layer; layer weights apply on Enter and layers can be removed. Duplicate layer additions are disabled. Dynamic fields are bound to the current scene root, clip and entity generation, and stale fields are released when the model or layer changes.

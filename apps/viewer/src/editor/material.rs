@@ -3,6 +3,20 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use nightshade_viewer_core::{ALPHA_LABELS, MaterialControl};
 
 const FIRST_FIELD: usize = 33;
+
+pub(super) fn field_error(index: usize, snapshot: Option<&ViewerSnapshot>) -> Option<String> {
+    let (control, label) = CONTROLS.get(index.checked_sub(FIRST_FIELD)?)?;
+    let Some(selection) = snapshot
+        .map(|s| &s.selection)
+        .filter(|s| s.material.is_some())
+    else {
+        return Some("Select an object with a material before editing.".into());
+    };
+    let (_, min, max, _) = control.row(&selection.material_values);
+    Some(format!(
+        "{label}: enter a finite number from {min} to {max}."
+    ))
+}
 // Reuse trunk's bounds, values and action mapping rather than another material model.
 pub(super) const CONTROLS: [(MaterialControl, &str); 11] = [
     (MaterialControl::AlphaCutoff, "Alpha cutoff"),
@@ -78,7 +92,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONTROLS, FIRST_FIELD, field_action};
+    use super::{CONTROLS, FIRST_FIELD, field_action, field_error};
     use nightshade_viewer_core::{
         ALPHA_LABELS, MaterialField, PrimitiveKind, ViewerAction as Action, ViewerArguments,
         ViewerCorePlugin, compose, snapshot, submit,
@@ -136,6 +150,9 @@ mod tests {
             let (_, min, max, _) = control.row(&state.selection.material_values);
             let value = min + (max - min) * 0.37;
             let index = FIRST_FIELD + offset;
+            let message = field_error(index, Some(&state)).unwrap();
+            assert!(message.contains(CONTROLS[offset].1));
+            assert!(message.contains(&format!("from {min} to {max}")));
             for bad in [
                 "NaN".to_owned(),
                 "inf".into(),

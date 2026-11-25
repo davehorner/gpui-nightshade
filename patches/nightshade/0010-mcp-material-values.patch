@@ -1,0 +1,53 @@
+diff --git a/apps/viewer/src/queries/agent.rs b/apps/viewer/src/queries/agent.rs
+--- a/apps/viewer/src/queries/agent.rs
++++ b/apps/viewer/src/queries/agent.rs
+@@ -407,6 +407,14 @@
+         "specular": values.specular,
+         "transmission": values.transmission,
+         "thickness": values.thickness,
++        "normal_scale": values.normal_scale,
++        "occlusion_strength": values.occlusion_strength,
++        "dispersion": values.dispersion,
++        "clearcoat": values.clearcoat,
++        "clearcoat_roughness": values.clearcoat_roughness,
++        "sheen_roughness": values.sheen_roughness,
++        "iridescence": values.iridescence,
++        "iridescence_ior": values.iridescence_ior,
+         "textures": values
+             .textures
+             .iter()
+diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
+--- a/apps/viewer/src/core.rs
++++ b/apps/viewer/src/core.rs
+@@ -349,6 +349,17 @@
+             app.stages.run(&mut app.world);
+         }
+         let entity = snapshot(&app.world).nodes[0].entity;
++        for field in [
++            MaterialField::NormalScale(2.4), MaterialField::OcclusionStrength(0.45),
++            MaterialField::Dispersion(0.2), MaterialField::Clearcoat(0.85),
++            MaterialField::ClearcoatRoughness(0.3), MaterialField::SheenRoughness(0.4),
++            MaterialField::Iridescence(0.7), MaterialField::IridescenceIor(1.8),
++        ] {
++            submit(&mut app.world, ViewerAction::SetMaterialField(field)).unwrap();
++        }
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        app.world.res_mut::<crate::resources::ViewerResources>().history = Default::default();
+         let (sender, receiver) = mpsc::channel();
+         let client = std::thread::spawn(move || {
+             let scene = call(port, "get_scene", json!({}));
+@@ -468,6 +479,13 @@
+             );
+             assert_eq!(batch["transforms"][0], before_batch);
+             let material = call(port, "get_material", json!({"entity":entity.id}));
++            for (field, expected) in [
++                ("normal_scale", 2.4), ("occlusion_strength", 0.45),
++                ("dispersion", 0.2), ("clearcoat", 0.85), ("clearcoat_roughness", 0.3),
++                ("sheen_roughness", 0.4), ("iridescence", 0.7), ("iridescence_ior", 1.8),
++            ] {
++                assert!((material[field].as_f64().unwrap()-expected).abs() < 1e-6, "{field}: {material}");
++            }
+             let changed = call(
+                 port,
+                 "set_material",

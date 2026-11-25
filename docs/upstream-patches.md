@@ -22,6 +22,8 @@ Changes are isolated to nightshade-wgpu: optional-surface initialization retaini
 
 ## GPUI
 
+Nightshade `0010-mcp-material-values.patch` extends material query/results with all previously omitted editable scalar values. The native HTTP regression initializes nondefault advanced material values through the action dispatcher and verifies their query values. Existing argument schemas remain unchanged.
+
 `patches/gpui/0001-shared-external-images.patch` is a reviewable diff against the pristine `gpui-pre` and `gpui-pre-windows` 0.3.14 source exports. Paths are relative to `upstream/gpui-snapshot`; the source changes are already applied there. Export provenance is Zed `f126950f9d3b62666f97437ae5d4ccac2272c4db`, as declared by those published packages. Root Cargo patches select the local exports. Their normalized manifests are kept so the exact matching registry family remains usable without cloning the entire Zed dependency workspace.
 
 Generic changes: owned `ExternalTexture` images, external atlas import with explicit unsupported errors, and a cache insertion helper. The Windows atlas allocates a whole imported texture as a polychrome tile. Existing sprite shaders/order/masks handle it. Windows-only code owns NT handles, checks LUIDs and descriptors, and enqueues producer/consumer fence operations around sprite drawing. Last-frame eviction retires imported native objects and the producer lease until consumer completion.

@@ -265,7 +265,8 @@ impl Editor {
         if let Some(action) = action {
             self.send(action, cx);
         } else {
-            self.message = "Enter finite numbers; vectors use x, y, z".into();
+            self.message = material::field_error(index, self.snapshot.as_deref())
+                .unwrap_or_else(|| "Enter finite numbers; vectors use x, y, z".into());
             cx.notify();
         }
     }

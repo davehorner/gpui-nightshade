@@ -4,6 +4,8 @@ The editor uses trunk's native localhost HTTP JSON-RPC endpoint and worker-owned
 
 ## Results and history
 
+`get_material` and the effective result of `set_material` expose every scalar in trunk's editable material view, including `normal_scale`, `occlusion_strength`, `dispersion`, `clearcoat`, `clearcoat_roughness`, `sheen_roughness`, `iridescence` and `iridescence_ior`. These added query/result fields do not expand `set_material`'s accepted arguments. Advanced inspector edits can be checked through `get_material` against the same native registry values.
+
 `set_transform`, `set_transforms`, `set_material`, and `set_light` return actual post-edit values. They share the inspector's edit helpers, clamping and undo history. Omitted fields are preserved; one multi-field call creates one history edit (subject to trunk's existing nearby-edit merging). Targeted edits preserve selection. Material edits affect every mesh sharing that material and refresh its selected inspector values.
 
 Actions dispatched for a later scene stage return `queued: true`. Existing acknowledgement fields remain for compatibility; they describe the requested operation, not proof of completion. Query the scene/selection/animation afterward. `set_render` returns `{queued: true, state_before: ...}` instead of presenting the pre-edit state as a completed result. Async loading and screenshot acknowledgements likewise do not guarantee a successful download or written file. Inspect viewer notices/status and output files as appropriate.
