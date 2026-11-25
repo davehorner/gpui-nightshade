@@ -5323,6 +5323,7 @@ dependencies = [
  "nightshade-wgpu",
  "nightshade-window",
  "pollster",
+ "serde_json",
  "viewer",
 ]
 

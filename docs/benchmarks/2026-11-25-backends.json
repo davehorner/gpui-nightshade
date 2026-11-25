@@ -1,0 +1,1387 @@
+{
+  "date": "2026-11-25",
+  "adapter": "NVIDIA GeForce RTX 4080",
+  "driver": "617.42",
+  "engine_commit": "a15c49fbe379b8ff45395909c0ea7894def61221",
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "width": 1920,
+  "height": 1080,
+  "views": 4,
+  "seconds_per_act": 24,
+  "warmup_seconds": 2,
+  "mcp_update_cap_hz": 12,
+  "pass_order": [
+    "dx12",
+    "vulkan",
+    "vulkan",
+    "dx12"
+  ],
+  "total_samples": 15091,
+  "aggregation": "equal-weight mean of per-act, per-pass frame means",
+  "assets": [
+    {
+      "role": "cube",
+      "name": "AnimatedMorphCube",
+      "source": "remote",
+      "sha256": "214ee56160a50dbf22543a1d66dbf860986e87f0efac3d89feac1359d0e6aeab"
+    },
+    {
+      "role": "spring",
+      "name": "CoiledSpring",
+      "source": "local fallback",
+      "sha256": "b7cc701653a10df1da2ea2c4a0958a63165ad1e1297d3c41745e1cffe00e1cfc"
+    },
+    {
+      "role": "morph",
+      "name": "AnimatedMorphSphere",
+      "source": "remote",
+      "sha256": "eda89538fdada0ff1edd813428c8728d351d6b136ebfcbc664abb9cf3431c213"
+    },
+    {
+      "role": "skeleton",
+      "name": "Fox",
+      "source": "remote",
+      "sha256": "d97044e701822bac5a62696459b27d7b375aada5de8574ed4362edbba94771f7"
+    }
+  ],
+  "aggregate_ms": {
+    "dx12": {
+      "dispatch_ms": 7.452663724238559,
+      "render_complete_ms": 194.28285659304368,
+      "gpu_span_ms": 189.42466252418455,
+      "readback_ms": 8.562103317452564,
+      "total_ms": 202.8452542402004
+    },
+    "vulkan": {
+      "dispatch_ms": 6.5114224610636295,
+      "render_complete_ms": 7.3487816161093065,
+      "gpu_span_ms": 6.314802865254108,
+      "readback_ms": 4.6725331229177804,
+      "total_ms": 12.021533982332594
+    }
+  },
+  "acts": {
+    "cube": {
+      "dx12": {
+        "dispatch_ms": {
+          "repeat_means": [
+            7.157249166666666,
+            7.24153185840708
+          ],
+          "mean": 7.199390512536873,
+          "repeat_p95": [
+            8.958,
+            8.8504
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            186.75779416666666,
+            199.51836725663716
+          ],
+          "mean": 193.13808071165192,
+          "repeat_p95": [
+            214.5409,
+            244.6733
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            181.90808614166667,
+            194.77362561061946
+          ],
+          "mean": 188.34085587614305,
+          "repeat_p95": [
+            208.676865,
+            240.111618
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            7.998945833333333,
+            9.272773451327433
+          ],
+          "mean": 8.635859642330383,
+          "repeat_p95": [
+            9.4846,
+            11.6346
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            194.75700416666666,
+            208.79149026548671
+          ],
+          "mean": 201.77424721607667,
+          "repeat_p95": [
+            223.8334,
+            255.2643
+          ]
+        },
+        "samples": 233
+      },
+      "vulkan": {
+        "dispatch_ms": {
+          "repeat_means": [
+            6.164739894459103,
+            6.346821148684917
+          ],
+          "mean": 6.25578052157201,
+          "repeat_p95": [
+            9.4856,
+            10.5345
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            7.018418627968337,
+            7.1724842190016105
+          ],
+          "mean": 7.095451423484974,
+          "repeat_p95": [
+            10.5196,
+            11.3343
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            6.043035761477572,
+            6.183774952764359
+          ],
+          "mean": 6.113405357120966,
+          "repeat_p95": [
+            9.321472,
+            9.817088
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            4.177504274406332,
+            4.236471551261406
+          ],
+          "mean": 4.206987912833869,
+          "repeat_p95": [
+            5.5817,
+            5.8876
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            11.196134617414248,
+            11.409164465915191
+          ],
+          "mean": 11.30264954166472,
+          "repeat_p95": [
+            15.1522,
+            16.4527
+          ]
+        },
+        "samples": 3758
+      },
+      "render_speedup": 27.219984914897914
+    },
+    "spring": {
+      "dx12": {
+        "dispatch_ms": {
+          "repeat_means": [
+            7.304956302521008,
+            7.673592982456141
+          ],
+          "mean": 7.489274642488574,
+          "repeat_p95": [
+            9.7761,
+            9.9898
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            188.92490420168068,
+            194.83434736842105
+          ],
+          "mean": 191.87962578505085,
+          "repeat_p95": [
+            218.0204,
+            228.2326
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            184.1549125042017,
+            189.9488015614035
+          ],
+          "mean": 187.05185703280262,
+          "repeat_p95": [
+            212.824066,
+            221.429764
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            8.006382352941177,
+            9.087864912280702
+          ],
+          "mean": 8.54712363261094,
+          "repeat_p95": [
+            9.6024,
+            11.6924
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            196.9315512605042,
+            203.92245614035087
+          ],
+          "mean": 200.42700370042752,
+          "repeat_p95": [
+            226.1829,
+            237.844
+          ]
+        },
+        "samples": 233
+      },
+      "vulkan": {
+        "dispatch_ms": {
+          "repeat_means": [
+            6.774482372691662,
+            8.462684861407249
+          ],
+          "mean": 7.618583617049456,
+          "repeat_p95": [
+            11.2215,
+            13.6681
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            7.4832849468382765,
+            9.321580454868515
+          ],
+          "mean": 8.402432700853396,
+          "repeat_p95": [
+            12.0176,
+            14.988
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            6.4403170626748745,
+            8.05869513859275
+          ],
+          "mean": 7.249506100633813,
+          "repeat_p95": [
+            10.555392,
+            13.676544
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            4.385709569110241,
+            5.828155081734186
+          ],
+          "mean": 5.106932325422214,
+          "repeat_p95": [
+            6.2458,
+            8.7044
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            11.869222999440403,
+            15.149988983653163
+          ],
+          "mean": 13.509605991546783,
+          "repeat_p95": [
+            17.4118,
+            22.4159
+          ]
+        },
+        "samples": 3194
+      },
+      "render_speedup": 22.83619906477353
+    },
+    "morph": {
+      "dx12": {
+        "dispatch_ms": {
+          "repeat_means": [
+            7.157475,
+            7.3436900900900905
+          ],
+          "mean": 7.250582545045045,
+          "repeat_p95": [
+            8.8928,
+            10.5181
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            192.3973675,
+            203.3637108108108
+          ],
+          "mean": 197.88053915540542,
+          "repeat_p95": [
+            222.0079,
+            242.3874
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            187.5568638,
+            198.76119456756757
+          ],
+          "mean": 193.1590291837838,
+          "repeat_p95": [
+            217.019394,
+            237.311996
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            8.034133333333333,
+            8.941093693693693
+          ],
+          "mean": 8.487613513513512,
+          "repeat_p95": [
+            9.8799,
+            11.1579
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            200.4317825,
+            212.3052009009009
+          ],
+          "mean": 206.36849170045045,
+          "repeat_p95": [
+            231.5035,
+            252.7871
+          ]
+        },
+        "samples": 231
+      },
+      "vulkan": {
+        "dispatch_ms": {
+          "repeat_means": [
+            6.599522289488167,
+            5.886612842965557
+          ],
+          "mean": 6.243067566226863,
+          "repeat_p95": [
+            9.9621,
+            7.8014
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            7.4271094661529995,
+            6.8715015178050205
+          ],
+          "mean": 7.14930549197901,
+          "repeat_p95": [
+            11.001,
+            9.2519
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            6.431604235002752,
+            5.855858475189725
+          ],
+          "mean": 6.1437313550962385,
+          "repeat_p95": [
+            9.860096,
+            8.076288
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            4.243054265272427,
+            5.279527203736135
+          ],
+          "mean": 4.761290734504281,
+          "repeat_p95": [
+            5.6602,
+            7.1342
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            11.670386956521739,
+            12.151249445417397
+          ],
+          "mean": 11.910818200969569,
+          "repeat_p95": [
+            15.8001,
+            15.8144
+          ]
+        },
+        "samples": 3530
+      },
+      "render_speedup": 27.67828838443296
+    },
+    "skeleton": {
+      "dx12": {
+        "dispatch_ms": {
+          "repeat_means": [
+            7.694868376068376,
+            8.047946017699115
+          ],
+          "mean": 7.871407196883745,
+          "repeat_p95": [
+            10.098,
+            11.0039
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            189.2816393162393,
+            199.1847221238938
+          ],
+          "mean": 194.23318072006657,
+          "repeat_p95": [
+            229.5803,
+            238.3593
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            184.14442327350426,
+            194.14939273451327
+          ],
+          "mean": 189.14690800400876,
+          "repeat_p95": [
+            225.003525,
+            232.571899
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            8.372918803418804,
+            8.782714159292036
+          ],
+          "mean": 8.57781648135542,
+          "repeat_p95": [
+            10.7582,
+            11.2747
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            197.65484957264957,
+            207.96769911504424
+          ],
+          "mean": 202.8112743438469,
+          "repeat_p95": [
+            237.7246,
+            245.8825
+          ]
+        },
+        "samples": 230
+      },
+      "vulkan": {
+        "dispatch_ms": {
+          "repeat_means": [
+            6.526351409618574,
+            5.330164869193807
+          ],
+          "mean": 5.92825813940619,
+          "repeat_p95": [
+            10.1757,
+            6.7885
+          ]
+        },
+        "render_complete_ms": {
+          "repeat_means": [
+            7.333216141514649,
+            6.16265755472504
+          ],
+          "mean": 6.747936848119845,
+          "repeat_p95": [
+            11.2183,
+            8.1685
+          ]
+        },
+        "gpu_span_ms": {
+          "repeat_means": [
+            6.281817719181868,
+            5.223319577148959
+          ],
+          "mean": 5.752568648165413,
+          "repeat_p95": [
+            9.796608,
+            7.112704
+          ]
+        },
+        "readback_ms": {
+          "repeat_means": [
+            4.363072028745163,
+            4.8667710090763485
+          ],
+          "mean": 4.614921518910756,
+          "repeat_p95": [
+            6.029,
+            6.3614
+          ]
+        },
+        "total_ms": {
+          "repeat_means": [
+            11.696504422332781,
+            11.02961996796583
+          ],
+          "mean": 11.363062195149306,
+          "repeat_p95": [
+            16.3744,
+            13.5168
+          ]
+        },
+        "samples": 3682
+      },
+      "render_speedup": 28.784083949182943
+    }
+  },
+  "per_pass": [
+    {
+      "backend": "dx12",
+      "run": 1,
+      "acts": {
+        "cube": {
+          "samples": 120,
+          "distinct_sampled_pixel_hashes": 115,
+          "dispatch_ms": {
+            "mean": 7.157249166666666,
+            "median": 6.803599999999999,
+            "p95": 8.958
+          },
+          "render_complete_ms": {
+            "mean": 186.75779416666666,
+            "median": 182.29845,
+            "p95": 214.5409
+          },
+          "gpu_span_ms": {
+            "mean": 181.90808614166667,
+            "median": 178.394623,
+            "p95": 208.676865
+          },
+          "readback_ms": {
+            "mean": 7.998945833333333,
+            "median": 7.9032,
+            "p95": 9.4846
+          },
+          "total_ms": {
+            "mean": 194.75700416666666,
+            "median": 190.24439999999998,
+            "p95": 223.8334
+          }
+        },
+        "spring": {
+          "samples": 119,
+          "distinct_sampled_pixel_hashes": 117,
+          "dispatch_ms": {
+            "mean": 7.304956302521008,
+            "median": 7.0212,
+            "p95": 9.7761
+          },
+          "render_complete_ms": {
+            "mean": 188.92490420168068,
+            "median": 184.8477,
+            "p95": 218.0204
+          },
+          "gpu_span_ms": {
+            "mean": 184.1549125042017,
+            "median": 180.503555,
+            "p95": 212.824066
+          },
+          "readback_ms": {
+            "mean": 8.006382352941177,
+            "median": 7.9064,
+            "p95": 9.6024
+          },
+          "total_ms": {
+            "mean": 196.9315512605042,
+            "median": 192.7354,
+            "p95": 226.1829
+          }
+        },
+        "morph": {
+          "samples": 120,
+          "distinct_sampled_pixel_hashes": 113,
+          "dispatch_ms": {
+            "mean": 7.157475,
+            "median": 6.702500000000001,
+            "p95": 8.8928
+          },
+          "render_complete_ms": {
+            "mean": 192.3973675,
+            "median": 188.29655,
+            "p95": 222.0079
+          },
+          "gpu_span_ms": {
+            "mean": 187.5568638,
+            "median": 183.66822050000002,
+            "p95": 217.019394
+          },
+          "readback_ms": {
+            "mean": 8.034133333333333,
+            "median": 7.9861,
+            "p95": 9.8799
+          },
+          "total_ms": {
+            "mean": 200.4317825,
+            "median": 196.2377,
+            "p95": 231.5035
+          }
+        },
+        "skeleton": {
+          "samples": 117,
+          "distinct_sampled_pixel_hashes": 114,
+          "dispatch_ms": {
+            "mean": 7.694868376068376,
+            "median": 7.2875,
+            "p95": 10.098
+          },
+          "render_complete_ms": {
+            "mean": 189.2816393162393,
+            "median": 184.5952,
+            "p95": 229.5803
+          },
+          "gpu_span_ms": {
+            "mean": 184.14442327350426,
+            "median": 179.837952,
+            "p95": 225.003525
+          },
+          "readback_ms": {
+            "mean": 8.372918803418804,
+            "median": 8.1984,
+            "p95": 10.7582
+          },
+          "total_ms": {
+            "mean": 197.65484957264957,
+            "median": 193.2217,
+            "p95": 237.7246
+          }
+        }
+      },
+      "playback": [
+        {
+          "role": "cube",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.075467236519927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "cube",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.1606371459956542,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 0.9328444584562927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.2048520315715512,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        }
+      ],
+      "metadata": {
+        "actual_backend": "Dx12",
+        "adapter": "NVIDIA GeForce RTX 4080",
+        "frames_in_flight": 1,
+        "gpu_timestamps": true,
+        "height": 1080,
+        "optimized": true,
+        "requested_backend": "dx12",
+        "scope": "native offscreen render and synchronous completed readback; excludes GPUI upload/display, loading and client sleeps",
+        "views": "4",
+        "warmup_seconds_per_act": 2,
+        "width": 1920
+      }
+    },
+    {
+      "backend": "vulkan",
+      "run": 2,
+      "acts": {
+        "cube": {
+          "samples": 1895,
+          "distinct_sampled_pixel_hashes": 1505,
+          "dispatch_ms": {
+            "mean": 6.164739894459103,
+            "median": 5.4259,
+            "p95": 9.4856
+          },
+          "render_complete_ms": {
+            "mean": 7.018418627968337,
+            "median": 6.4749,
+            "p95": 10.5196
+          },
+          "gpu_span_ms": {
+            "mean": 6.043035761477572,
+            "median": 5.636096,
+            "p95": 9.321472
+          },
+          "readback_ms": {
+            "mean": 4.177504274406332,
+            "median": 3.9781,
+            "p95": 5.5817
+          },
+          "total_ms": {
+            "mean": 11.196134617414248,
+            "median": 10.6003,
+            "p95": 15.1522
+          }
+        },
+        "spring": {
+          "samples": 1787,
+          "distinct_sampled_pixel_hashes": 1785,
+          "dispatch_ms": {
+            "mean": 6.774482372691662,
+            "median": 5.8332,
+            "p95": 11.2215
+          },
+          "render_complete_ms": {
+            "mean": 7.4832849468382765,
+            "median": 6.7485,
+            "p95": 12.0176
+          },
+          "gpu_span_ms": {
+            "mean": 6.4403170626748745,
+            "median": 5.794816,
+            "p95": 10.555392
+          },
+          "readback_ms": {
+            "mean": 4.385709569110241,
+            "median": 4.1067,
+            "p95": 6.2458
+          },
+          "total_ms": {
+            "mean": 11.869222999440403,
+            "median": 11.0618,
+            "p95": 17.4118
+          }
+        },
+        "morph": {
+          "samples": 1817,
+          "distinct_sampled_pixel_hashes": 1414,
+          "dispatch_ms": {
+            "mean": 6.599522289488167,
+            "median": 5.8142,
+            "p95": 9.9621
+          },
+          "render_complete_ms": {
+            "mean": 7.4271094661529995,
+            "median": 6.9487,
+            "p95": 11.001
+          },
+          "gpu_span_ms": {
+            "mean": 6.431604235002752,
+            "median": 6.045696,
+            "p95": 9.860096
+          },
+          "readback_ms": {
+            "mean": 4.243054265272427,
+            "median": 4.0413,
+            "p95": 5.6602
+          },
+          "total_ms": {
+            "mean": 11.670386956521739,
+            "median": 11.1345,
+            "p95": 15.8001
+          }
+        },
+        "skeleton": {
+          "samples": 1809,
+          "distinct_sampled_pixel_hashes": 1806,
+          "dispatch_ms": {
+            "mean": 6.526351409618574,
+            "median": 5.8153,
+            "p95": 10.1757
+          },
+          "render_complete_ms": {
+            "mean": 7.333216141514649,
+            "median": 6.8563,
+            "p95": 11.2183
+          },
+          "gpu_span_ms": {
+            "mean": 6.281817719181868,
+            "median": 5.842944,
+            "p95": 9.796608
+          },
+          "readback_ms": {
+            "mean": 4.363072028745163,
+            "median": 4.1225,
+            "p95": 6.029
+          },
+          "total_ms": {
+            "mean": 11.696504422332781,
+            "median": 11.1579,
+            "p95": 16.3744
+          }
+        }
+      },
+      "playback": [
+        {
+          "role": "cube",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.075467236519927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "cube",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.1606371459956542,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 0.9328444584562927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.2048520315715512,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        }
+      ],
+      "metadata": {
+        "actual_backend": "Vulkan",
+        "adapter": "NVIDIA GeForce RTX 4080",
+        "frames_in_flight": 1,
+        "gpu_timestamps": true,
+        "height": 1080,
+        "optimized": true,
+        "requested_backend": "vulkan",
+        "scope": "native offscreen render and synchronous completed readback; excludes GPUI upload/display, loading and client sleeps",
+        "views": "4",
+        "warmup_seconds_per_act": 2,
+        "width": 1920
+      }
+    },
+    {
+      "backend": "vulkan",
+      "run": 3,
+      "acts": {
+        "cube": {
+          "samples": 1863,
+          "distinct_sampled_pixel_hashes": 1516,
+          "dispatch_ms": {
+            "mean": 6.346821148684917,
+            "median": 5.5502,
+            "p95": 10.5345
+          },
+          "render_complete_ms": {
+            "mean": 7.1724842190016105,
+            "median": 6.5857,
+            "p95": 11.3343
+          },
+          "gpu_span_ms": {
+            "mean": 6.183774952764359,
+            "median": 5.712896,
+            "p95": 9.817088
+          },
+          "readback_ms": {
+            "mean": 4.236471551261406,
+            "median": 3.9494,
+            "p95": 5.8876
+          },
+          "total_ms": {
+            "mean": 11.409164465915191,
+            "median": 10.7236,
+            "p95": 16.4527
+          }
+        },
+        "spring": {
+          "samples": 1407,
+          "distinct_sampled_pixel_hashes": 1405,
+          "dispatch_ms": {
+            "mean": 8.462684861407249,
+            "median": 7.6849,
+            "p95": 13.6681
+          },
+          "render_complete_ms": {
+            "mean": 9.321580454868515,
+            "median": 8.6335,
+            "p95": 14.988
+          },
+          "gpu_span_ms": {
+            "mean": 8.05869513859275,
+            "median": 7.472128,
+            "p95": 13.676544
+          },
+          "readback_ms": {
+            "mean": 5.828155081734186,
+            "median": 5.5036,
+            "p95": 8.7044
+          },
+          "total_ms": {
+            "mean": 15.149988983653163,
+            "median": 14.554,
+            "p95": 22.4159
+          }
+        },
+        "morph": {
+          "samples": 1713,
+          "distinct_sampled_pixel_hashes": 1317,
+          "dispatch_ms": {
+            "mean": 5.886612842965557,
+            "median": 5.6243,
+            "p95": 7.8014
+          },
+          "render_complete_ms": {
+            "mean": 6.8715015178050205,
+            "median": 6.6607,
+            "p95": 9.2519
+          },
+          "gpu_span_ms": {
+            "mean": 5.855858475189725,
+            "median": 5.771264,
+            "p95": 8.076288
+          },
+          "readback_ms": {
+            "mean": 5.279527203736135,
+            "median": 5.0483,
+            "p95": 7.1342
+          },
+          "total_ms": {
+            "mean": 12.151249445417397,
+            "median": 11.7247,
+            "p95": 15.8144
+          }
+        },
+        "skeleton": {
+          "samples": 1873,
+          "distinct_sampled_pixel_hashes": 1870,
+          "dispatch_ms": {
+            "mean": 5.330164869193807,
+            "median": 5.1354,
+            "p95": 6.7885
+          },
+          "render_complete_ms": {
+            "mean": 6.16265755472504,
+            "median": 5.9118,
+            "p95": 8.1685
+          },
+          "gpu_span_ms": {
+            "mean": 5.223319577148959,
+            "median": 5.014528,
+            "p95": 7.112704
+          },
+          "readback_ms": {
+            "mean": 4.8667710090763485,
+            "median": 4.6675,
+            "p95": 6.3614
+          },
+          "total_ms": {
+            "mean": 11.02961996796583,
+            "median": 10.7812,
+            "p95": 13.5168
+          }
+        }
+      },
+      "playback": [
+        {
+          "role": "cube",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.075467236519927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "cube",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.1606371459956542,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 0.9328444584562927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.2048520315715512,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        }
+      ],
+      "metadata": {
+        "actual_backend": "Vulkan",
+        "adapter": "NVIDIA GeForce RTX 4080",
+        "frames_in_flight": 1,
+        "gpu_timestamps": true,
+        "height": 1080,
+        "optimized": true,
+        "requested_backend": "vulkan",
+        "scope": "native offscreen render and synchronous completed readback; excludes GPUI upload/display, loading and client sleeps",
+        "views": "4",
+        "warmup_seconds_per_act": 2,
+        "width": 1920
+      }
+    },
+    {
+      "backend": "dx12",
+      "run": 4,
+      "acts": {
+        "cube": {
+          "samples": 113,
+          "distinct_sampled_pixel_hashes": 108,
+          "dispatch_ms": {
+            "mean": 7.24153185840708,
+            "median": 6.9925,
+            "p95": 8.8504
+          },
+          "render_complete_ms": {
+            "mean": 199.51836725663716,
+            "median": 190.7335,
+            "p95": 244.6733
+          },
+          "gpu_span_ms": {
+            "mean": 194.77362561061946,
+            "median": 186.667007,
+            "p95": 240.111618
+          },
+          "readback_ms": {
+            "mean": 9.272773451327433,
+            "median": 8.9731,
+            "p95": 11.6346
+          },
+          "total_ms": {
+            "mean": 208.79149026548671,
+            "median": 199.2621,
+            "p95": 255.2643
+          }
+        },
+        "spring": {
+          "samples": 114,
+          "distinct_sampled_pixel_hashes": 112,
+          "dispatch_ms": {
+            "mean": 7.673592982456141,
+            "median": 7.41685,
+            "p95": 9.9898
+          },
+          "render_complete_ms": {
+            "mean": 194.83434736842105,
+            "median": 190.5798,
+            "p95": 228.2326
+          },
+          "gpu_span_ms": {
+            "mean": 189.9488015614035,
+            "median": 185.518585,
+            "p95": 221.429764
+          },
+          "readback_ms": {
+            "mean": 9.087864912280702,
+            "median": 8.87035,
+            "p95": 11.6924
+          },
+          "total_ms": {
+            "mean": 203.92245614035087,
+            "median": 199.5316,
+            "p95": 237.844
+          }
+        },
+        "morph": {
+          "samples": 111,
+          "distinct_sampled_pixel_hashes": 106,
+          "dispatch_ms": {
+            "mean": 7.3436900900900905,
+            "median": 7.1227,
+            "p95": 10.5181
+          },
+          "render_complete_ms": {
+            "mean": 203.3637108108108,
+            "median": 197.47,
+            "p95": 242.3874
+          },
+          "gpu_span_ms": {
+            "mean": 198.76119456756757,
+            "median": 192.130051,
+            "p95": 237.311996
+          },
+          "readback_ms": {
+            "mean": 8.941093693693693,
+            "median": 8.8191,
+            "p95": 11.1579
+          },
+          "total_ms": {
+            "mean": 212.3052009009009,
+            "median": 206.5861,
+            "p95": 252.7871
+          }
+        },
+        "skeleton": {
+          "samples": 113,
+          "distinct_sampled_pixel_hashes": 110,
+          "dispatch_ms": {
+            "mean": 8.047946017699115,
+            "median": 7.624,
+            "p95": 11.0039
+          },
+          "render_complete_ms": {
+            "mean": 199.1847221238938,
+            "median": 194.9873,
+            "p95": 238.3593
+          },
+          "gpu_span_ms": {
+            "mean": 194.14939273451327,
+            "median": 189.339645,
+            "p95": 232.571899
+          },
+          "readback_ms": {
+            "mean": 8.782714159292036,
+            "median": 8.5053,
+            "p95": 11.2747
+          },
+          "total_ms": {
+            "mean": 207.96769911504424,
+            "median": 202.7608,
+            "p95": 245.8825
+          }
+        }
+      },
+      "playback": [
+        {
+          "role": "cube",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.075467236519927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "cube",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.1606371459956542,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "spring",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 0.9328444584562927,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "morph",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "set_animation",
+          "arguments": {
+            "speed": 1.2048520315715512,
+            "looping": true,
+            "blend_time": 0
+          }
+        },
+        {
+          "role": "skeleton",
+          "tool": "play_clip",
+          "arguments": {
+            "index": 0,
+            "blend_time": 0
+          }
+        }
+      ],
+      "metadata": {
+        "actual_backend": "Dx12",
+        "adapter": "NVIDIA GeForce RTX 4080",
+        "frames_in_flight": 1,
+        "gpu_timestamps": true,
+        "height": 1080,
+        "optimized": true,
+        "requested_backend": "dx12",
+        "scope": "native offscreen render and synchronous completed readback; excludes GPUI upload/display, loading and client sleeps",
+        "views": "4",
+        "warmup_seconds_per_act": 2,
+        "width": 1920
+      }
+    }
+  ],
+  "telemetry": {
+    "run-01-dx12": {
+      "gpu-before.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 35 %, 12420 MiB, 1800 MHz, 11201 MHz, 53.85 W\n",
+      "gpu-after.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 13 %, 12269 MiB, 2775 MHz, 11201 MHz, 99.53 W\n"
+    },
+    "run-02-vulkan": {
+      "gpu-before.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 13 %, 12283 MiB, 2775 MHz, 11201 MHz, 99.53 W\n",
+      "gpu-after.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 58 %, 12190 MiB, 2775 MHz, 11201 MHz, 100.80 W\n"
+    },
+    "run-03-vulkan": {
+      "gpu-before.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 58 %, 12190 MiB, 2775 MHz, 11201 MHz, 100.80 W\n",
+      "gpu-after.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 66 %, 12134 MiB, 2775 MHz, 11201 MHz, 95.79 W\n"
+    },
+    "run-04-dx12": {
+      "gpu-before.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 66 %, 12134 MiB, 2775 MHz, 11201 MHz, 95.79 W\n",
+      "gpu-after.csv": "name, driver_version, pstate, utilization.gpu [%], memory.used [MiB], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]\nNVIDIA GeForce RTX 4080, 617.42, P0, 100 %, 12183 MiB, 2790 MHz, 11201 MHz, 97.95 W\n"
+    }
+  },
+  "limitations": [
+    "Offscreen one-frame-in-flight rendering with serialized CPU readback, no GPUI display or shared transport.",
+    "Real-time MCP path, not frame-identical animation replay.",
+    "Background desktop GPU allocation/activity persisted.",
+    "DX12 indirect-count workaround differs from the Vulkan rendering path; cause of gap not isolated."
+  ]
+}
