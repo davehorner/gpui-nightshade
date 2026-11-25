@@ -844,38 +844,20 @@ impl DirectXRenderer {
             return Ok(());
         };
         let external = &binding.external;
-        let probe = crate::shared_texture::interop_probe();
-        if external.is_some() && probe == crate::shared_texture::InteropProbe::NoDraw {
-            return Ok(());
-        }
-        let draw = || -> Result<()> {
-            if external.is_none()
-                || matches!(
-                    probe,
-                    crate::shared_texture::InteropProbe::Normal
-                        | crate::shared_texture::InteropProbe::Frozen
-                        | crate::shared_texture::InteropProbe::Fresh
-                        | crate::shared_texture::InteropProbe::Aligned
-                )
-            {
-                self.pipelines.poly_sprites.draw_range_with_texture(
-                    &devices.device_context,
-                    &binding.views,
-                    self.globals
-                        .batch_params_buffer
-                        .as_ref()
-                        .context("batch params buffer missing")?,
-                    slice::from_ref(&self.globals.sampler),
-                    start as u32,
-                    len as u32,
-                )?;
-            }
-            Ok(())
-        };
         if let Some(external) = external {
             external.before_draw()?;
         }
-        draw()?;
+        self.pipelines.poly_sprites.draw_range_with_texture(
+            &devices.device_context,
+            &binding.views,
+            self.globals
+                .batch_params_buffer
+                .as_ref()
+                .context("batch params buffer missing")?,
+            slice::from_ref(&self.globals.sampler),
+            start as u32,
+            len as u32,
+        )?;
         if let Some(external) = external {
             external.after_draw()?;
         }

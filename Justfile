@@ -21,9 +21,6 @@ test-gpu:
     cargo test -p gpui-nightshade-components --locked -- --include-ignored --test-threads=1
     cargo test -p gpui-pre-windows external_eviction_retains_import_until_consumer_completion --locked -- --ignored --test-threads=1
 
-test-sampling:
-    cargo test -p gpui-nightshade-components windows::sampling_test --locked -- --ignored --nocapture --test-threads=1
-
 test-shared frames="1200" port="19790":
     cargo build -p gpui-nightshade-viewer --locked
     pwsh -NoLogo -NoProfile -File scripts/verify-windows-shared.ps1 -Frames {{frames}} -Port {{port}}

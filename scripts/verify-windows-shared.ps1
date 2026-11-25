@@ -2,7 +2,6 @@ param(
     [int]$Frames = 1200,
     [int]$Port = 19790,
     [int]$TimeoutSeconds = 600,
-    [ValidateSet('normal','no-draw','signal-only','frozen','fresh','aligned')][string]$Probe = 'normal',
     [switch]$Stress
 )
 $ErrorActionPreference = 'Stop'
@@ -15,13 +14,10 @@ New-Item -ItemType Directory -Path $run -Force | Out-Null
 $log = Join-Path $run 'stderr.log'
 $oldTrace = $env:GPUI_NIGHTSHADE_TRACE_GPU
 $oldLayout = $env:GPUI_NIGHTSHADE_LAYOUT
-$oldProbe = $env:GPUI_NIGHTSHADE_INTEROP_PROBE
 $oldStress = $env:GPUI_NIGHTSHADE_GPU_STRESS
 $process = $null
 $published = 0
 $presents = 0
-$progressCount = 0
-$progressKind = if ($Probe -eq 'frozen') { 'consumer draw submissions' } else { 'published GPU frames' }
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,$Port)
 try { $listener.Start() } finally { $listener.Stop() }
 function Invoke-ViewerTool([string]$Name, $Arguments) {
@@ -34,7 +30,6 @@ function Invoke-ViewerTool([string]$Name, $Arguments) {
 try {
     $env:GPUI_NIGHTSHADE_TRACE_GPU = '1'
     $env:GPUI_NIGHTSHADE_GPU_STRESS = if ($Stress) { '1' } else { $null }
-    $env:GPUI_NIGHTSHADE_INTEROP_PROBE = $Probe
     $env:GPUI_NIGHTSHADE_LAYOUT = Join-Path $run 'layout.json'
     # This is an interactive compositor test: the viewer window must be shown,
     # otherwise visibility suspension correctly prevents all presentation work.
@@ -56,27 +51,22 @@ try {
         if ($progressMatches.Count) { $published = [int]$progressMatches[$progressMatches.Count - 1].Groups[1].Value }
         $presentMatches = [regex]::Matches($logText, 'GPUI shared compositor: presents_submitted=(\d+)')
         if ($presentMatches.Count) { $presents = [int]$presentMatches[$presentMatches.Count - 1].Groups[1].Value }
-        $progressCount = $published
-        if ($Probe -eq 'frozen') {
-            $drawMatches = [regex]::Matches($logText, 'GPUI shared consumer: draws_submitted=(\d+)')
-            $progressCount = if ($drawMatches.Count) { [int]$drawMatches[$drawMatches.Count - 1].Groups[1].Value } else { 0 }
-        }
         if (!$ready) {
             try { $null = Invoke-ViewerTool 'get_scene' @{}; $ready = $true } catch { }
         }
-        if ($progressCount -ge 300 -and !$switched -and $ready) {
+        if ($published -ge 300 -and !$switched -and $ready) {
             $null = Invoke-ViewerTool 'load_file' @{path=(Join-Path $root 'upstream/nightshade/assets/gltf/fox.glb')}
             $switched = $true
         }
-        if ($progressCount -gt $lastReported) {
-            Write-Output "${progressKind}: $progressCount"
-            $lastReported = $progressCount
+        if ($published -gt $lastReported) {
+            Write-Output "published GPU frames: $published"
+            $lastReported = $published
         }
         $stressComplete = !$Stress -or $logText -match 'Shared GPU lifecycle: complete'
-        if ($progressCount -ge $Frames -and $presents -ge $Frames -and $switched -and $stressComplete) { break }
+        if ($published -ge $Frames -and $presents -ge $Frames -and $switched -and $stressComplete) { break }
         Start-Sleep -Milliseconds 500
     }
-    if ($progressCount -lt $Frames) { throw "Timed out at $progressCount $progressKind; see $log" }
+    if ($published -lt $Frames) { throw "Timed out at $published published GPU frames; see $log" }
     if ($presents -lt $Frames) { throw "Timed out at $presents successful Present calls; see $log" }
     if ($Stress -and !$stressComplete) { throw 'Lifecycle stress did not complete.' }
     $resizeGenerations = [regex]::Matches($logText, 'Shared GPU resize: generation=').Count
@@ -94,16 +84,21 @@ try {
     if ($finalLog -match 'worker stopped|device status: Err|panicked|D3D11_MESSAGE_SEVERITY\(1\)') {
         throw "GPU failure during final animation verification; see $log"
     }
-    $report = @{status='passed'; resizeGenerations=$resizeGenerations; suspensions=$suspensions; resumptions=$resumptions; probe=$Probe; lifecycleStress=[bool]$Stress; sceneDrawEnabled=($Probe -in @('normal','frozen','fresh','aligned')); frozenScene=($Probe -eq 'frozen'); progressKind=$progressKind; progressCount=$progressCount; backend='windows-shared'; cpuReadbackFallback=$false; publishedFrames=$published; presentsSubmitted=$presents; resolution='see stderr progress'; peakProcessWorkingSetBytes=$peakWorkingSet; animationClips=$next.clips.Count; log=$log}
+    $report = @{
+        status='passed'; backend='windows-shared'; cpuReadbackFallback=$false
+        lifecycleStress=[bool]$Stress; publishedFrames=$published; presentsSubmitted=$presents
+        resizeGenerations=$resizeGenerations; suspensions=$suspensions; resumptions=$resumptions
+        resolution='see stderr progress'; peakProcessWorkingSetBytes=$peakWorkingSet
+        animationClips=$next.clips.Count; log=$log
+    }
     $report | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
-    Write-Output "Shared-GPU $Probe check passed: $run"
+    Write-Output "Shared-GPU check passed: $run"
 } catch {
-    @{status='failed'; probe=$Probe; lifecycleStress=[bool]$Stress; backend='windows-shared'; publishedFrames=$published; presentsSubmitted=$presents; error=$_.Exception.Message; log=$log} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
+    @{status='failed'; lifecycleStress=[bool]$Stress; backend='windows-shared'; publishedFrames=$published; presentsSubmitted=$presents; error=$_.Exception.Message; log=$log} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'report.json')
     throw
 } finally {
     if ($process -and !$process.HasExited) { $process.Kill() }
     $env:GPUI_NIGHTSHADE_TRACE_GPU = $oldTrace
     $env:GPUI_NIGHTSHADE_LAYOUT = $oldLayout
-    $env:GPUI_NIGHTSHADE_INTEROP_PROBE = $oldProbe
     $env:GPUI_NIGHTSHADE_GPU_STRESS = $oldStress
 }

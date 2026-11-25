@@ -31,8 +31,6 @@ struct State {
     rendered_frames: u64,
     hidden_ticks: u64,
     image: Option<Arc<RenderImage>>,
-    #[cfg(all(test, target_os = "windows"))]
-    native_test_frame: Option<Arc<gpui_windows::shared_texture::SharedTexture>>,
     error: Option<String>,
     pub diagnostics: String,
     selected: Option<u32>,
@@ -66,8 +64,6 @@ impl Worker {
                 rendered_frames: 0,
                 hidden_ticks: 0,
                 image: None,
-                #[cfg(all(test, target_os = "windows"))]
-                native_test_frame: None,
                 error: None,
                 diagnostics: "Initializing GPU".into(),
             }),
@@ -146,15 +142,6 @@ impl Worker {
                 format!("{} | selection {:?}", state.diagnostics, state.selected)
             }),
         )
-    }
-    #[cfg(all(test, target_os = "windows"))]
-    pub(crate) fn take_native_test_frame(
-        &self,
-    ) -> Option<Arc<gpui_windows::shared_texture::SharedTexture>> {
-        let mut state = self.shared.0.lock().unwrap();
-        assert!(state.error.is_none(), "worker error: {:?}", state.error);
-        state.image.take();
-        state.native_test_frame.take()
     }
 }
 
@@ -277,10 +264,6 @@ fn run(
     let started = std::time::Instant::now();
     let mut last_trace = started;
     let mut last_visible = true;
-    let frozen_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("frozen");
-    let aligned_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("aligned");
-    let fresh_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("fresh");
-    let mut published_generation = None;
     loop {
         transport.check_device()?;
         #[cfg(target_os = "windows")]
@@ -301,7 +284,7 @@ fn run(
             );
             last_trace = std::time::Instant::now();
         }
-        let (mut request, revision, fallback, input_pending, visible) = {
+        let (request, revision, fallback, input_pending, visible) = {
             let mut state = shared.0.lock().unwrap();
             while !state.quit
                 && state.revision == applied
@@ -323,10 +306,6 @@ fn run(
                 state.visible,
             )
         };
-        if gpu && aligned_probe {
-            request.width = request.width.div_ceil(64) * 64;
-            request.height = request.height.div_ceil(64) * 64;
-        }
         if trace_gpu && last_visible != visible {
             eprintln!("Shared GPU visibility: visible={visible}");
             last_visible = visible;
@@ -381,17 +360,20 @@ fn run(
                 host.renderer().surface_config.width,
                 host.renderer().surface_config.height,
             );
-        let refresh_requested =
-            resize_requested || (gpu && fresh_probe && published_generation == Some(generation));
-        if (revision != applied || host.continuous() || input_pending || refresh_requested)
+        if (revision != applied || host.continuous() || input_pending)
             && transport.can_submit()
-            && (!refresh_requested || (transport.can_resize() && retirement_capacity))
+            && (!resize_requested || (transport.can_resize() && retirement_capacity))
         {
             if request.width == 0 || request.height == 0 {
                 applied = revision;
                 continue;
             }
-            if refresh_requested {
+            if (request.width, request.height)
+                != (
+                    host.renderer().surface_config.width,
+                    host.renderer().surface_config.height,
+                )
+            {
                 generation += 1;
                 // Validate replacement allocations before replacing the live generation.
                 let replacement = Transport::new(
@@ -401,14 +383,12 @@ fn run(
                     generation,
                     gpu,
                 )?;
-                if resize_requested {
-                    host.resize(request.width, request.height)?;
-                    if gpu && trace_gpu {
-                        eprintln!(
-                            "Shared GPU resize: generation={generation}, size={}x{}",
-                            request.width, request.height
-                        );
-                    }
+                host.resize(request.width, request.height)?;
+                if gpu && trace_gpu {
+                    eprintln!(
+                        "Shared GPU resize: generation={generation}, size={}x{}",
+                        request.width, request.height
+                    );
                 }
                 let previous = std::mem::replace(&mut transport, replacement);
                 #[cfg(not(target_os = "windows"))]
@@ -439,12 +419,8 @@ fn run(
             if let Some(event) = shared.0.lock().unwrap().input.pop() {
                 host.pointer_input(event);
             }
-            if frozen_probe && published_generation == Some(generation) {
-                host.service_hidden()?;
-            } else {
-                host.render()?;
-                shared.0.lock().unwrap().rendered_frames += 1;
-            }
+            host.render()?;
+            shared.0.lock().unwrap().rendered_frames += 1;
             let source = host.renderer().external_output.as_ref().unwrap();
             match &mut transport {
                 Transport::Readback(ring) => {
@@ -460,9 +436,7 @@ fn run(
                 }
                 #[cfg(target_os = "windows")]
                 Transport::Shared(ring) => {
-                    if frozen_probe && published_generation == Some(generation) {
-                        applied = revision;
-                    } else if let Some(frame) =
+                    if let Some(frame) =
                         ring.copy_frame(&host.renderer().device, &host.renderer().queue, source)?
                     {
                         applied = revision;
@@ -479,7 +453,6 @@ fn run(
         if let Transport::Shared(ring) = &mut transport
             && let Some(frame) = ring.take_ready()
         {
-            published_generation = Some(generation);
             published_frames += 1;
             if trace_gpu && published_frames.is_multiple_of(300) {
                 eprintln!(
@@ -498,10 +471,6 @@ fn run(
                 frame.height,
                 sequence
             );
-            #[cfg(all(test, target_os = "windows"))]
-            {
-                state.native_test_frame = Some(frame.clone());
-            }
             state.image = Some(Arc::new(RenderImage::from_external(frame)));
             state.changed = true;
         }

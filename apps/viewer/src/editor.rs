@@ -1,6 +1,7 @@
 mod animation;
 mod docking;
 mod file_drop;
+mod gpu_validation;
 mod rendering;
 use animation::{WeightEditor, WeightTarget};
 use gpui_kit::base::Disableable;
@@ -46,49 +47,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        if std::env::var_os("GPUI_NIGHTSHADE_GPU_STRESS").is_some() {
-            let handle = window.window_handle();
-            cx.spawn(async move |view, cx| {
-                cx.background_executor().timer(Duration::from_secs(5)).await;
-                for step in 0..24 {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(600))
-                        .await;
-                    if handle
-                        .update(cx, |_, window, cx| {
-                            let (width, height) =
-                                [(1024., 680.), (1450., 900.), (800., 600.), (1280., 720.)]
-                                    [step % 4];
-                            window.resize(size(px(width), px(height)));
-                            if step % 8 == 7 {
-                                let _ = view.update(cx, |view, cx| view.dock.reset(window, cx));
-                            }
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                    if step % 6 == 5 {
-                        if handle
-                            .update(cx, |_, window, _| window.minimize_window())
-                            .is_err()
-                        {
-                            return;
-                        }
-                        cx.background_executor().timer(Duration::from_secs(1)).await;
-                        if handle
-                            .update(cx, |_, window, _| window.activate_window())
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    eprintln!("Shared GPU lifecycle: step={}", step + 1);
-                }
-                eprintln!("Shared GPU lifecycle: complete");
-            })
-            .detach();
-        }
+        gpu_validation::start(window, cx);
         cx.on_release(|view, cx| {
             if let Err(error) = view.dock.save(cx) {
                 eprintln!("Could not save editor layout: {error}");

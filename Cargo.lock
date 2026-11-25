@@ -2991,7 +2991,6 @@ dependencies = [
  "gpui-nightshade",
  "gpui-pre-windows",
  "image",
- "nightshade-viewer-core",
  "pollster",
  "windows 0.62.2",
 ]
