@@ -1,0 +1,30 @@
+[workspace]
+members = ["crates/gpui-nightshade", "crates/gpui-nightshade-components", "apps/viewer"]
+default-members = ["crates/gpui-nightshade"]
+exclude = ["upstream/nightshade", "upstream/zed", "upstream/gpui-component"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.100"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+nightshade = { path = "upstream/nightshade/crates/nightshade" }
+nightshade-wgpu = { path = "upstream/nightshade/crates/plugins/compose/nightshade-wgpu" }
+nightshade-render = { path = "upstream/nightshade/crates/plugins/describe/nightshade-render" }
+nightshade-graphics = { path = "upstream/nightshade/crates/plugins/domain/nightshade-graphics" }
+pollster = "0.4"
+
+nightshade-wgpu-geometry = { path = "upstream/nightshade/crates/plugins/draw/nightshade-wgpu-geometry" }
+nightshade-wgpu-shading = { path = "upstream/nightshade/crates/plugins/draw/nightshade-wgpu-shading" }
+
+
+[workspace.dependencies.nightshade-wgpu-outline]
+path = "upstream/nightshade/crates/plugins/draw/nightshade-wgpu-outline"
+
+[patch.crates-io]
+gpui-pre = { path = "upstream/gpui-snapshot/gpui" }
+gpui-pre-windows = { path = "upstream/gpui-snapshot/gpui-windows" }
+
+

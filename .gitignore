@@ -1,10 +1,4 @@
 /target/
 /*.log
-/*_upstream.py
-/patch_gpui.py
-/patch_dx11.py
-/fix_fence.py
-/improve_worker.py
-/debug_frame.py
-/select_backend.py
-/integrate_gpu.py
+**/.cargo-ok
+/upstream/gpui-snapshot/*/Cargo.lock

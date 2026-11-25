@@ -1,0 +1,393 @@
+--- a/gpui/src/assets.rs
++++ b/gpui/src/assets.rs
+@@ -46,6 +46,7 @@
+     /// The scale factor of this image on render.
+     pub(crate) scale_factor: f32,
+     data: SmallVec<[Frame; 1]>,
++    pub(crate) external: Option<std::sync::Arc<dyn ExternalTexture>>,
+ }
+ 
+ impl PartialEq for RenderImage {
+@@ -56,7 +57,22 @@
+ 
+ impl Eq for RenderImage {}
+ 
++/// An immutable GPU frame. Platform implementations own native resources and synchronization.
++pub trait ExternalTexture: std::any::Any + Send + Sync + std::fmt::Debug {
++    /// Physical pixel dimensions of the immutable frame.
++    fn size(&self) -> Size<DevicePixels>;
++    /// Platform downcast without exposing platform types in this API.
++    fn as_any(&self) -> &dyn std::any::Any;
++}
++
+ impl RenderImage {
++    /// Construct a GPU image without allocating or uploading CPU pixel bytes.
++    pub fn from_external(texture: std::sync::Arc<dyn ExternalTexture>) -> Self {
++        let mut image = Self::new(Vec::<Frame>::new());
++        image.external = Some(texture);
++        image
++    }
++
+     /// Create a new image from the given data.
+     pub fn new(data: impl Into<SmallVec<[Frame; 1]>>) -> Self {
+         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+@@ -65,6 +81,7 @@
+             id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
+             scale_factor: 1.0,
+             data: data.into(),
++            external: None,
+         }
+     }
+ 
+@@ -77,6 +94,9 @@
+ 
+     /// Get the size of this image, in pixels.
+     pub fn size(&self, frame_index: usize) -> Size<DevicePixels> {
++        if let Some(texture) = &self.external {
++            return texture.size();
++        }
+         self.data
+             .get(frame_index)
+             .map(|frame| {
+@@ -102,7 +122,11 @@
+ 
+     /// Get the number of frames for this image.
+     pub fn frame_count(&self) -> usize {
+-        self.data.len()
++        if self.external.is_some() {
++            1
++        } else {
++            self.data.len()
++        }
+     }
+ }
+ 
+--- a/gpui/src/platform.rs
++++ b/gpui/src/platform.rs
+@@ -1878,6 +1878,15 @@
+ 
+ #[expect(missing_docs)]
+ pub trait PlatformAtlas {
++    /// Import an immutable GPU image. Unsupported platforms return an explicit error.
++    fn get_or_insert_external(
++        &self,
++        _key: AtlasKey,
++        _texture: std::sync::Arc<dyn crate::ExternalTexture>,
++    ) -> Result<AtlasTile> {
++        anyhow::bail!("external GPU textures are unsupported by this atlas")
++    }
++
+     /// The builder runs with the atlas locked and must not re-enter the same atlas.
+     fn get_or_insert_with<'a>(
+         &self,
+@@ -1918,6 +1927,18 @@
+         }
+     }
+ 
++    pub fn get_or_insert_tile(
++        &mut self,
++        key: AtlasKey,
++        build: impl FnOnce(&mut Backend) -> Result<AtlasTile>,
++    ) -> Result<AtlasTile> {
++        if let Some(tile) = self.tiles_by_key.get(&key) {
++            return Ok(*tile);
++        }
++        let tile = build(&mut self.backend)?;
++        self.tiles_by_key.insert(key, tile);
++        Ok(tile)
++    }
+     pub fn contains(&self, key: &AtlasKey) -> bool {
+         self.tiles_by_key.contains_key(key)
+     }
+--- a/gpui/src/window.rs
++++ b/gpui/src/window.rs
+@@ -5568,18 +5568,22 @@
+             frame_index,
+         };
+ 
+-        let tile = self
+-            .sprite_atlas
+-            .get_or_insert_with(params.into(), &mut || {
+-                Ok(Some((
+-                    data.size(frame_index),
+-                    Cow::Borrowed(
+-                        data.as_bytes(frame_index)
+-                            .expect("It's the caller's job to pass a valid frame index"),
+-                    ),
+-                )))
+-            })?
+-            .expect("Callback above only returns Some");
++        let tile = if let Some(texture) = &data.external {
++            self.sprite_atlas
++                .get_or_insert_external(params.into(), texture.clone())?
++        } else {
++            self.sprite_atlas
++                .get_or_insert_with(params.into(), &mut || {
++                    Ok(Some((
++                        data.size(frame_index),
++                        Cow::Borrowed(
++                            data.as_bytes(frame_index)
++                                .expect("It's the caller's job to pass a valid frame index"),
++                        ),
++                    )))
++                })?
++                .expect("Callback above only returns Some")
++        };
+ 
+         let visible_bounds_snapped = self.snap_bounds(visible_bounds);
+ 
+--- a/gpui-windows/src/directx_atlas.rs
++++ b/gpui-windows/src/directx_atlas.rs
+@@ -30,6 +30,7 @@
+     texture: ID3D11Texture2D,
+     view: [Option<ID3D11ShaderResourceView>; 1],
+     live_atlas_keys: u32,
++    external: Option<std::sync::Arc<crate::shared_texture::ImportedTexture>>,
+ }
+ 
+ impl DirectXAtlas {
+@@ -56,6 +57,12 @@
+         Some(texture.view.clone())
+     }
+ 
++    pub(crate) fn external_texture(
++        &self,
++        id: AtlasTextureId,
++    ) -> Option<std::sync::Arc<crate::shared_texture::ImportedTexture>> {
++        self.0.lock().backend.texture(id)?.external.clone()
++    }
+     pub(crate) fn handle_device_lost(
+         &self,
+         device: &ID3D11Device,
+@@ -73,6 +80,48 @@
+ }
+ 
+ impl PlatformAtlas for DirectXAtlas {
++    fn get_or_insert_external(
++        &self,
++        key: AtlasKey,
++        owner: std::sync::Arc<dyn gpui::ExternalTexture>,
++    ) -> anyhow::Result<AtlasTile> {
++        self.0.lock().get_or_insert_tile(key, |backend| {
++            let size = owner.size();
++            let (texture, imported) =
++                crate::shared_texture::import(&backend.device, &backend.device_context, owner)?;
++            let mut view = None;
++            unsafe {
++                backend
++                    .device
++                    .CreateShaderResourceView(&texture, None, Some(&mut view))
++                    .map_err(|e| anyhow::anyhow!("CreateShaderResourceView shared: {e}"))?;
++            }
++            let list = &mut backend.polychrome_textures;
++            let index = list.free_list.pop().unwrap_or(list.textures.len());
++            let mut entry = DirectXAtlasTexture {
++                id: AtlasTextureId {
++                    index: index as u32,
++                    kind: AtlasTextureKind::Polychrome,
++                },
++                bytes_per_pixel: 4,
++                allocator: BucketedAtlasAllocator::new(device_size_to_etagere(size)),
++                texture,
++                view: [view],
++                live_atlas_keys: 0,
++                external: Some(std::sync::Arc::new(imported)),
++            };
++            let tile = entry
++                .allocate(size)
++                .ok_or_else(|| anyhow::anyhow!("external texture tile allocation failed"))?;
++            if index == list.textures.len() {
++                list.textures.push(Some(entry));
++            } else {
++                list.textures[index] = Some(entry);
++            }
++            Ok(tile)
++        })
++    }
++
+     fn get_or_insert_with<'a>(
+         &self,
+         key: AtlasKey,
+@@ -240,6 +289,7 @@
+             texture,
+             view,
+             live_atlas_keys: 0,
++            external: None,
+         };
+         if let Some(ix) = index {
+             texture_list.textures[ix] = Some(atlas_texture);
+--- a/gpui-windows/src/directx_renderer.rs
++++ b/gpui-windows/src/directx_renderer.rs
+@@ -829,6 +829,10 @@
+         let Some(texture_view) = self.atlas.get_texture_view(texture_id) else {
+             return Ok(());
+         };
++        let external = self.atlas.external_texture(texture_id);
++        if let Some(external) = &external {
++            external.before_draw()?;
++        }
+         self.pipelines.poly_sprites.draw_range_with_texture(
+             &devices.device_context,
+             &texture_view,
+@@ -839,7 +843,11 @@
+             slice::from_ref(&self.globals.sampler),
+             start as u32,
+             len as u32,
+-        )
++        )?;
++        if let Some(external) = &external {
++            external.after_draw()?;
++        }
++        Ok(())
+     }
+ 
+     fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
+--- a/gpui-windows/src/gpui_windows.rs
++++ b/gpui-windows/src/gpui_windows.rs
+@@ -41,3 +41,5 @@
+ pub use platform::WindowsPlatform;
+ 
+ pub(crate) use windows::Win32::Foundation::HWND;
++
++pub mod shared_texture;
+--- /dev/null
++++ b/gpui-windows/src/shared_texture.rs
+@@ -0,0 +1,138 @@
++//! D3D12/D3D11 shared immutable frames, imported by GPUI's regular sprite compositor.
++use anyhow::Context;
++use std::{
++    any::Any,
++    sync::{
++        Arc,
++        atomic::{AtomicBool, Ordering},
++    },
++};
++use windows::{
++    Win32::{
++        Foundation::{CloseHandle, HANDLE},
++        Graphics::{Direct3D11::*, Dxgi::IDXGIDevice},
++    },
++    core::Interface,
++};
++
++/// Owns an NT handle. Never exposes a borrowed handle beyond its owner lifetime.
++#[derive(Debug)]
++pub struct SharedHandle(HANDLE);
++// SAFETY: NT shared-resource/fence handles support cross-thread operations. Arc owns
++// the sole CloseHandle operation, so no borrower races a close.
++unsafe impl Send for SharedHandle {}
++unsafe impl Sync for SharedHandle {}
++impl SharedHandle {
++    /// Takes exclusive ownership of a valid NT handle.
++    /// # Safety
++    /// The handle must be owned, valid, and safe to close with CloseHandle.
++    pub unsafe fn from_owned(handle: HANDLE) -> Self {
++        Self(handle)
++    }
++    pub fn raw(&self) -> HANDLE {
++        self.0
++    }
++}
++impl Drop for SharedHandle {
++    fn drop(&mut self) {
++        unsafe {
++            let _ = CloseHandle(self.0);
++        }
++    }
++}
++
++#[derive(Debug)]
++pub struct SharedTexture {
++    pub texture_handle: Arc<SharedHandle>,
++    pub fence_handle: Arc<SharedHandle>,
++    pub adapter_luid: u64,
++    pub width: u32,
++    pub height: u32,
++    pub ready_value: u64,
++    pub done_value: u64,
++    pub sampled: Arc<AtomicBool>,
++}
++impl gpui::ExternalTexture for SharedTexture {
++    fn size(&self) -> gpui::Size<gpui::DevicePixels> {
++        gpui::size(
++            gpui::DevicePixels(self.width as i32),
++            gpui::DevicePixels(self.height as i32),
++        )
++    }
++    fn as_any(&self) -> &dyn Any {
++        self
++    }
++}
++pub(crate) struct ImportedTexture {
++    pub frame: Arc<dyn gpui::ExternalTexture>,
++    pub fence: ID3D11Fence,
++    pub context: ID3D11DeviceContext4,
++}
++impl ImportedTexture {
++    pub fn before_draw(&self) -> anyhow::Result<()> {
++        let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();
++        frame.sampled.store(true, Ordering::Release);
++        unsafe {
++            self.context.Wait(&self.fence, frame.ready_value)?;
++        }
++        Ok(())
++    }
++    pub fn after_draw(&self) -> anyhow::Result<()> {
++        let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();
++        unsafe {
++            self.context.Signal(&self.fence, frame.done_value)?;
++            self.context.Flush();
++        }
++        Ok(())
++    }
++}
++pub(crate) fn import(
++    device: &ID3D11Device,
++    context: &ID3D11DeviceContext,
++    owner: Arc<dyn gpui::ExternalTexture>,
++) -> anyhow::Result<(ID3D11Texture2D, ImportedTexture)> {
++    let frame = owner
++        .as_any()
++        .downcast_ref::<SharedTexture>()
++        .ok_or_else(|| anyhow::anyhow!("unsupported external texture type"))?;
++    let dxgi: IDXGIDevice = device.cast()?;
++    let desc = unsafe { dxgi.GetAdapter()?.GetDesc()? };
++    let luid = (desc.AdapterLuid.HighPart as u32 as u64) << 32 | desc.AdapterLuid.LowPart as u64;
++    anyhow::ensure!(
++        luid == frame.adapter_luid,
++        "GPUI and Nightshade adapter LUIDs differ"
++    );
++    let device1: ID3D11Device1 = device.cast()?;
++    let device5: ID3D11Device5 = device.cast()?;
++    let texture: ID3D11Texture2D = unsafe {
++        device1
++            .OpenSharedResource1(frame.texture_handle.raw())
++            .context("OpenSharedResource1 texture")?
++    };
++    let mut fence = None;
++    unsafe {
++        device5
++            .OpenSharedFence::<ID3D11Fence>(frame.fence_handle.raw(), &mut fence)
++            .context("OpenSharedFence")?;
++    }
++    let fence = fence.ok_or_else(|| anyhow::anyhow!("shared fence import returned no fence"))?;
++    let mut desc = D3D11_TEXTURE2D_DESC::default();
++    unsafe {
++        texture.GetDesc(&mut desc);
++    }
++    anyhow::ensure!(
++        desc.Width == frame.width
++            && desc.Height == frame.height
++            && desc.SampleDesc.Count == 1
++            && desc.Format == windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
++        "incompatible shared texture descriptor"
++    );
++    Ok((
++        texture,
++        ImportedTexture {
++            frame: owner,
++            fence,
++            context: context.cast()?,
++        },
++    ))
++}

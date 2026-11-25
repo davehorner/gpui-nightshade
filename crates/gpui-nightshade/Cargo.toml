@@ -1,0 +1,30 @@
+[package]
+name = "gpui-nightshade"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nightshade.workspace = true
+nightshade-wgpu.workspace = true
+nightshade-render.workspace = true
+nightshade-graphics.workspace = true
+pollster.workspace = true
+
+[[example]]
+name = "headless"
+path = "../../examples/headless.rs"
+
+[dependencies.nightshade-wgpu-geometry]
+workspace = true
+
+[dependencies.nightshade-wgpu-shading]
+workspace = true
+
+[[example]]
+name = "presentation_benchmark"
+path = "../../examples/presentation_benchmark.rs"
+
+[dependencies.nightshade-wgpu-outline]
+workspace = true

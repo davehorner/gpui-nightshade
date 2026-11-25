@@ -1,0 +1,254 @@
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/lib.rs b/crates/plugins/compose/nightshade-wgpu/src/lib.rs
+index 2ccb648..aa711b4 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/lib.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/lib.rs
+@@ -52,6 +52,7 @@ pub mod backend {
+     pub use crate::renderer::wgpu::placeholder;
+     pub use crate::renderer::wgpu::placeholder::{placeholder_depth_texture, placeholder_texture};
+     pub use crate::renderer::wgpu::presentation::install_presentation_passes;
++    pub use crate::renderer::wgpu::picking::{poll_depth_pick, DepthPickReadback};
+     pub use crate::renderer::wgpu::render_configs::{
+         CameraFrameInputs, CameraProjectionParams, RenderInputs, SingleViewHost, ViewFrame,
+         compose_single_view, restore_single_view,
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs
+index 9f4c6cc..f7d743f 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs
+@@ -19,6 +19,7 @@ pub mod picking;
+ pub mod presentation;
+ pub mod render_configs;
+ mod surface;
++mod external_output;
+ pub mod texture_uploads;
+ pub mod timing;
+ pub(crate) mod view;
+@@ -68,6 +69,8 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+ 
+ pub struct WgpuRenderer {
+     pub surface: Option<wgpu::Surface<'static>>,
++    /// Owned handle retained until a replacement output is installed.
++    pub external_output: Option<wgpu::Texture>,
+     pub instance: Option<wgpu::Instance>,
+     pub device: wgpu::Device,
+     pub queue: wgpu::Queue,
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/external_output.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/external_output.rs
+new file mode 100644
+index 0000000..dd25c88
+--- /dev/null
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/external_output.rs
+@@ -0,0 +1,69 @@
++use super::{WgpuRenderer, rendergraph::render_graph_set_external_texture};
++
++impl WgpuRenderer {
++    /// Allocate a GPU output, retaining all normal scene and presentation passes.
++    pub fn set_owned_output(
++        &mut self,
++        width: u32,
++        height: u32,
++    ) -> Result<(), Box<dyn std::error::Error>> {
++        if width == 0
++            || height == 0
++            || width > self.device.limits().max_texture_dimension_2d
++            || height > self.device.limits().max_texture_dimension_2d
++        {
++            return Err("output dimensions exceed device limits or are zero".into());
++        }
++        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
++            label: Some("Nightshade external output"),
++            size: wgpu::Extent3d {
++                width,
++                height,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format: self.surface_format,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
++                | wgpu::TextureUsages::COPY_SRC
++                | wgpu::TextureUsages::TEXTURE_BINDING,
++            view_formats: &[],
++        });
++        self.set_external_output(texture)
++    }
++
++    /// The caller must allocate on this renderer's device. wgpu validates device identity.
++    /// Holding a cloned texture handle retains the resource through submitted GPU work.
++    pub fn set_external_output(
++        &mut self,
++        texture: wgpu::Texture,
++    ) -> Result<(), Box<dyn std::error::Error>> {
++        if self.surface.is_some() {
++            return Err("release the native surface before attaching an external output".into());
++        }
++        if texture.format() != self.surface_format
++            || texture.dimension() != wgpu::TextureDimension::D2
++            || texture.mip_level_count() != 1
++            || texture.sample_count() != 1
++            || texture.depth_or_array_layers() != 1
++            || !texture
++                .usage()
++                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
++        {
++            return Err("incompatible external output".into());
++        }
++        self.resize_surface(texture.width(), texture.height())?;
++        let view = texture.create_view(&Default::default());
++        render_graph_set_external_texture(
++            &mut self.graph,
++            self.targets.swapchain,
++            Some(texture.clone()),
++            view,
++            texture.width(),
++            texture.height(),
++        );
++        self.external_output = Some(texture);
++        Ok(())
++    }
++}
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs
+index 06431a5..df46cb2 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs
+@@ -178,7 +178,7 @@ fn run_frame(
+     run_frame_inputs_hooks(hooks, renderer, inputs);
+ 
+     let surface_texture = presentation::acquire_surface_frame(renderer);
+-    let has_surface = surface_texture.is_some();
++    let has_surface = surface_texture.is_some() || renderer.external_output.is_some();
+     if !has_surface && inputs.frame.cameras.is_empty() {
+         return Ok(());
+     }
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
+index 0026da3..a8aba91 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
+@@ -213,6 +213,78 @@ impl super::WgpuRenderer {
+         bindless_config: crate::renderer::wgpu::caps::BindlessConfig,
+         initial_width: u32,
+         initial_height: u32,
++    ) -> Result<Self, Box<dyn std::error::Error>> {
++        Self::new_with_optional_surface(
++            adapter,
++            device,
++            queue,
++            Some(surface),
++            surface_format,
++            bindless_config,
++            initial_width,
++            initial_height,
++        )
++        .await
++    }
++
++    /// Creates a renderer without allocating a window or native surface.
++    pub async fn new_headless(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
++        Self::new_headless_with_backends(
++            width,
++            height,
++            wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
++        )
++        .await
++    }
++
++    pub async fn new_headless_with_backends(
++        width: u32,
++        height: u32,
++        backends: wgpu::Backends,
++    ) -> Result<Self, Box<dyn std::error::Error>> {
++        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
++        descriptor.backends = backends;
++        let instance = wgpu::Instance::new(descriptor);
++        let adapter = instance
++            .request_adapter(&wgpu::RequestAdapterOptions {
++                compatible_surface: None,
++                ..Default::default()
++            })
++            .await?;
++        let config =
++            negotiate_device_config(adapter.features(), &adapter.limits(), &adapter.get_info());
++        let (device, queue) = adapter
++            .request_device(&wgpu::DeviceDescriptor {
++                required_features: config.required_features,
++                required_limits: config.required_limits,
++                ..Default::default()
++            })
++            .await?;
++        let mut renderer = Self::new_with_optional_surface(
++            &adapter,
++            device,
++            queue,
++            None,
++            wgpu::TextureFormat::Bgra8Unorm,
++            config.bindless,
++            width.max(1),
++            height.max(1),
++        )
++        .await?;
++        renderer.instance = Some(instance);
++        renderer.set_owned_output(width.max(1), height.max(1))?;
++        Ok(renderer)
++    }
++
++    async fn new_with_optional_surface(
++        adapter: &wgpu::Adapter,
++        device: wgpu::Device,
++        queue: wgpu::Queue,
++        surface: Option<wgpu::Surface<'static>>,
++        surface_format: wgpu::TextureFormat,
++        bindless_config: crate::renderer::wgpu::caps::BindlessConfig,
++        initial_width: u32,
++        initial_height: u32,
+     ) -> Result<Self, Box<dyn std::error::Error>> {
+         let adapter_info = adapter.get_info();
+ 
+@@ -230,7 +302,15 @@ impl super::WgpuRenderer {
+             gpu_profile.device_type
+         );
+ 
+-        let surface_capabilities = surface.get_capabilities(adapter);
++        let surface_capabilities = surface
++            .as_ref()
++            .map(|surface| surface.get_capabilities(adapter))
++            .unwrap_or(wgpu::SurfaceCapabilities {
++                formats: vec![surface_format],
++                present_modes: vec![wgpu::PresentMode::Fifo],
++                alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
++                usages: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
++            });
+         if surface_capabilities.formats.is_empty() {
+             return Err(
+                 "the selected adapter cannot present to this surface: no supported formats".into(),
+@@ -275,7 +355,9 @@ impl super::WgpuRenderer {
+             desired_maximum_frame_latency: 2,
+         };
+ 
+-        surface.configure(&device, &surface_config);
++        if let Some(surface) = surface.as_ref() {
++            surface.configure(&device, &surface_config);
++        }
+ 
+         let shader_composer = ShaderComposer::new();
+         let point_shadow_format = pick_texture_format(
+@@ -748,7 +830,8 @@ impl super::WgpuRenderer {
+         let timing = crate::renderer::wgpu::timing::GpuTiming::new(&device, &queue);
+ 
+         Ok(Self {
+-            surface: Some(surface),
++            surface,
++            external_output: None,
+             instance: None,
+             device,
+             queue,
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs
+index 94a1c7c..9b08c0e 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs
+@@ -50,6 +50,7 @@ impl WgpuRenderer {
+         self.surface_config.width = width.max(1);
+         self.surface_config.height = height.max(1);
+         surface.configure(&self.device, &self.surface_config);
++        self.external_output = None;
+         self.surface = Some(surface);
+         self.resize_render_buffers(width.max(1), height.max(1));
+ 
