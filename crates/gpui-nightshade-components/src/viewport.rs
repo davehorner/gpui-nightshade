@@ -1,10 +1,11 @@
-use crate::worker::{ViewRequest, Worker};
+use crate::worker::{ViewRequest, ViewportFrame, Worker};
 use gpui_kit::*;
+use gpui_nightshade::presentation::{FrameInfo, PresentationStatus};
 use std::{sync::Arc, time::Duration};
 
 pub struct NightshadeViewport {
     worker: Worker,
-    image: Option<Arc<RenderImage>>,
+    image: Option<ViewportFrame>,
     diagnostics: String,
     request: ViewRequest,
     last_pointer: Option<Point<Pixels>>,
@@ -36,7 +37,7 @@ impl NightshadeViewport {
     ) -> Self {
         cx.on_release(|view, cx| {
             if let Some(image) = view.image.take() {
-                cx.drop_image(image, None);
+                cx.drop_image(image.image, None);
             }
         })
         .detach();
@@ -90,6 +91,15 @@ impl NightshadeViewport {
             focus: cx.focus_handle(),
             _poll: poll,
         }
+    }
+    /// Owned snapshot of the actual transport, adapter, visibility and failures.
+    pub fn presentation_status(&self) -> PresentationStatus {
+        self.worker.presentation_status()
+    }
+    /// Metadata for the image currently retained by this view. This is not a
+    /// swapchain-present acknowledgement or a GPU timing measurement.
+    pub fn current_frame_info(&self) -> Option<FrameInfo> {
+        self.image.as_ref().map(|frame| frame.info)
     }
     /// Use trunk scene input for left-button picking/gizmos; right-drag navigates.
     pub fn with_scene_input(mut self) -> Self {
@@ -239,10 +249,10 @@ impl Render for NightshadeViewport {
         if let Some(image) = image
             && let Some(old) = self.image.replace(image)
         {
-            let _ = window.drop_image(old);
+            let _ = window.drop_image(old.image);
         }
         self.diagnostics = diagnostics;
-        let image = self.image.clone();
+        let image = self.image.as_ref().map(|frame| frame.image.clone());
         let entity = cx.entity().downgrade();
         let paint_entity = entity.clone();
         div()

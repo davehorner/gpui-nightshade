@@ -52,7 +52,7 @@ GPUI snapshot packages are exported upstream sources under `upstream/gpui-snapsh
 
 The external GPU image extension reuses GPUI's regular polychrome sprite primitive. It preserves layout, content masks, scene ordering, opacity and atlas eviction rather than adding an independent native visual tree.
 
-Verified on Windows with NVIDIA GeForce RTX 4080: headless pixels and picking, CPU viewport display, shared GPU display, camera orbit, GPUI overlay, two independent viewports, and GPU readback tests. The original trunk viewer also passes `cargo check` with the patch. Full upstream-application runtime regression, device-loss recovery, long resize/minimize stress, and non-Windows execution are not yet verified. [Architecture](docs/architecture.md), [presentation feasibility](docs/presentation.md), [patches](docs/upstream-patches.md), [measurements](docs/benchmarks.md).
+Verified on Windows with NVIDIA GeForce RTX 4080: headless pixels and picking, CPU viewport display, shared GPU display, camera orbit, GPUI overlay, two independent viewports, and GPU readback tests. The original trunk viewer also passes `cargo check` with the patch. Full upstream-application runtime regression, device-loss recovery, long resize/minimize stress, and non-Windows execution are not yet verified. [Embedding API](docs/integration.md), [architecture](docs/architecture.md), [presentation feasibility](docs/presentation.md), [patches](docs/upstream-patches.md), [measurements](docs/benchmarks.md).
 
 ## Licenses
 

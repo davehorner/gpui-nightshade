@@ -4,6 +4,8 @@ The default executable now runs the trunk viewer core inside the GPUI-owned wind
 
 Implemented this milestone:
 
+- Reusable viewport inspection API with actual transport/adapter, effective visibility, fallback/error and metadata tied to the retained image. Shared pending frames preserve producer identity; unused parallel GPU-frame abstractions were removed. See [embedding API](integration.md).
+
 - `ViewerCorePlugin` and `NativeViewerUiPlugin`, with the original `ViewerPlugin` composing both. Core startup and update schedules run without a retained UI runtime.
 - Embedded composition with caller-owned arguments and no native Nightshade event loop or window.
 - Bounded action submission and owned hierarchy, selection, material, animation, render settings and history snapshots. Existing viewer actions and native agent plugin are reused.

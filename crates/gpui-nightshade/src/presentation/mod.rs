@@ -32,17 +32,77 @@ pub struct CpuFrame {
     pub latency: std::time::Duration,
 }
 
-/// GPU transports retain a texture and an explicit synchronization contract.
-/// No native handles escape through this interface.
-pub trait GpuFrame: Send + Sync {
-    fn id(&self) -> FrameId;
-    fn dimensions(&self) -> (u32, u32);
-    fn color_space(&self) -> ColorSpace;
+/// Metadata for one immutable published frame, independent of its pixel storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameInfo {
+    pub id: FrameId,
+    pub width: u32,
+    pub height: u32,
+    pub color_space: ColorSpace,
+    pub alpha: AlphaMode,
+}
+impl CpuFrame {
+    pub fn info(&self) -> FrameInfo {
+        FrameInfo {
+            id: self.id,
+            width: self.width,
+            height: self.height,
+            color_space: self.color_space,
+            alpha: self.alpha,
+        }
+    }
 }
 
-pub enum PresentationFrame {
-    Cpu(CpuFrame),
-    Gpu(std::sync::Arc<dyn GpuFrame>),
+/// The allocated transport, rather than the user's requested preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentationBackend {
+    Readback,
+    WindowsShared,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentationCapabilities {
+    /// Pixel bytes stay on the GPU during normal presentation.
+    pub gpu_resident: bool,
+    /// The renderer and GPUI must use the same physical adapter.
+    pub requires_matching_adapter: bool,
+}
+impl PresentationBackend {
+    pub fn capabilities(self) -> PresentationCapabilities {
+        let shared = self == Self::WindowsShared;
+        PresentationCapabilities {
+            gpu_resident: shared,
+            requires_matching_adapter: shared,
+        }
+    }
+}
+
+/// Owned status snapshot for an embedding application. No native handles escape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentationStatus {
+    pub requested: BackendPreference,
+    /// None during initialization. This is the last initialized transport;
+    /// an error means that it must not be treated as usable.
+    pub active: Option<PresentationBackend>,
+    pub graphics_backend: Option<crate::wgpu::Backend>,
+    pub adapter: Option<String>,
+    pub visible: bool,
+    pub fallback_reason: Option<String>,
+    /// Failures are reported, not silently presented as recovery.
+    pub error: Option<String>,
+}
+impl PresentationStatus {
+    pub fn initializing(requested: BackendPreference) -> Self {
+        Self {
+            requested,
+            active: None,
+            graphics_backend: None,
+            adapter: None,
+            visible: true,
+            fallback_reason: None,
+            error: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

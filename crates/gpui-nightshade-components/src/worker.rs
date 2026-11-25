@@ -1,5 +1,9 @@
 use gpui_kit::*;
-use gpui_nightshade::presentation::BackendPreference;
+use gpui_nightshade::presentation::{
+    BackendPreference, FrameInfo, PresentationBackend, PresentationStatus,
+};
+#[cfg(target_os = "windows")]
+use gpui_nightshade::presentation::{ColorSpace, FrameId};
 use gpui_nightshade::{
     presentation::{AlphaMode, readback::ReadbackRing},
     wgpu,
@@ -20,18 +24,23 @@ pub struct ViewRequest {
     pub pick: Option<(u32, u32, u64)>,
 }
 
+/// The metadata and owned GPUI image always move through the mailbox together.
+#[derive(Clone)]
+pub(crate) struct ViewportFrame {
+    pub image: Arc<RenderImage>,
+    pub info: FrameInfo,
+}
+
 struct State {
-    preference: BackendPreference,
     fallback: bool,
     request: ViewRequest,
     revision: u64,
     quit: bool,
     changed: bool,
-    visible: bool,
     rendered_frames: u64,
     hidden_ticks: u64,
-    image: Option<Arc<RenderImage>>,
-    error: Option<String>,
+    image: Option<ViewportFrame>,
+    status: PresentationStatus,
     pub diagnostics: String,
     selected: Option<u32>,
     input: gpui_nightshade::input::PointerQueue,
@@ -44,7 +53,6 @@ impl Worker {
     pub fn new(preference: BackendPreference, factory: crate::SceneFactory) -> Self {
         let shared = Arc::new((
             Mutex::new(State {
-                preference,
                 fallback: false,
                 selected: None,
                 input: Default::default(),
@@ -60,11 +68,10 @@ impl Worker {
                 revision: 1,
                 quit: false,
                 changed: false,
-                visible: true,
                 rendered_frames: 0,
                 hidden_ticks: 0,
                 image: None,
-                error: None,
+                status: PresentationStatus::initializing(preference),
                 diagnostics: "Initializing GPU".into(),
             }),
             Condvar::new(),
@@ -76,7 +83,7 @@ impl Worker {
                 if let Err(error) = run(&thread_state, &factory) {
                     eprintln!("Nightshade presentation worker stopped: {error}");
                     let mut state = thread_state.0.lock().unwrap();
-                    state.error = Some(error.to_string());
+                    state.status.error = Some(error.to_string());
                     state.changed = true;
                 }
             })
@@ -93,12 +100,13 @@ impl Worker {
     }
     pub fn paint_failed(&self, error: String) {
         let mut state = self.shared.0.lock().unwrap();
-        if state.preference == BackendPreference::Auto && !state.fallback {
+        if state.status.requested == BackendPreference::Auto && !state.fallback {
             state.fallback = true;
+            state.status.fallback_reason = Some(error);
             state.revision += 1;
             self.shared.1.notify_one();
         } else {
-            state.error = Some(error);
+            state.status.error = Some(error);
             state.changed = true;
         }
     }
@@ -112,8 +120,8 @@ impl Worker {
     }
     pub fn set_visible(&self, visible: bool) {
         let mut state = self.shared.0.lock().unwrap();
-        if state.visible != visible {
-            state.visible = visible;
+        if state.status.visible != visible {
+            state.status.visible = visible;
             state.input.cancel();
             state.request.pick = None;
             state.revision += 1;
@@ -130,15 +138,18 @@ impl Worker {
         state.input.cancel();
         self.shared.1.notify_one();
     }
+    pub fn presentation_status(&self) -> PresentationStatus {
+        self.shared.0.lock().unwrap().status.clone()
+    }
     pub fn has_update(&self) -> bool {
         self.shared.0.lock().unwrap().changed
     }
-    pub fn take(&self) -> (Option<Arc<RenderImage>>, String) {
+    pub fn take(&self) -> (Option<ViewportFrame>, String) {
         let mut state = self.shared.0.lock().unwrap();
         state.changed = false;
         (
             state.image.take(),
-            state.error.clone().unwrap_or_else(|| {
+            state.status.error.clone().unwrap_or_else(|| {
                 format!("{} | selection {:?}", state.diagnostics, state.selected)
             }),
         )
@@ -216,7 +227,7 @@ fn run(
     shared: &Arc<(Mutex<State>, Condvar)>,
     factory: &crate::SceneFactory,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let choice = shared.0.lock().unwrap().preference;
+    let choice = shared.0.lock().unwrap().status.requested;
     if choice == BackendPreference::WindowsShared && !cfg!(target_os = "windows") {
         return Err("windows-shared is unavailable on this platform".into());
     }
@@ -226,6 +237,7 @@ fn run(
             Ok(host) => host,
             Err(error) if choice == BackendPreference::Auto => {
                 eprintln!("DX12 initialization unavailable: {error}; selecting readback");
+                shared.0.lock().unwrap().status.fallback_reason = Some(error.to_string());
                 gpu = false;
                 (factory)(
                     wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
@@ -247,11 +259,22 @@ fn run(
         Ok(transport) => transport,
         Err(error) if choice == BackendPreference::Auto => {
             eprintln!("shared allocation unavailable: {error}; selecting readback");
+            shared.0.lock().unwrap().status.fallback_reason = Some(error.to_string());
             gpu = false;
             Transport::new(host.as_ref(), 640, 480, 0, false)?
         }
         Err(error) => return Err(error),
     };
+    {
+        let mut state = shared.0.lock().unwrap();
+        state.status.active = Some(if gpu {
+            PresentationBackend::WindowsShared
+        } else {
+            PresentationBackend::Readback
+        });
+        state.status.adapter = Some(host.renderer().gpu_profile.name.clone());
+        state.status.graphics_backend = Some(host.renderer().device.adapter_info().backend);
+    }
     let mut applied = 0;
     let mut sequence = 0;
     let mut pick_sequence = None;
@@ -277,7 +300,7 @@ fn run(
             let state = shared.0.lock().unwrap();
             eprintln!(
                 "Shared GPU heartbeat: visible={}, submitted={sequence}, published={published_frames}, pending={}, can_submit={}, elapsed={:.1}s",
-                state.visible,
+                state.status.visible,
                 transport.in_flight(),
                 transport.can_submit(),
                 started.elapsed().as_secs_f64()
@@ -303,7 +326,7 @@ fn run(
                 state.revision,
                 state.fallback,
                 !state.input.is_empty(),
-                state.visible,
+                state.status.visible,
             )
         };
         if trace_gpu && last_visible != visible {
@@ -324,7 +347,7 @@ fn run(
             applied = revision;
             let mut state = shared.0.lock().unwrap();
             state.hidden_ticks += 1;
-            if !state.quit && !state.visible {
+            if !state.quit && !state.status.visible {
                 let _ = shared
                     .1
                     .wait_timeout(state, Duration::from_millis(16))
@@ -353,6 +376,7 @@ fn run(
                 retired_shared.push(ring);
             }
             gpu = false;
+            shared.0.lock().unwrap().status.active = Some(PresentationBackend::Readback);
             applied = 0;
         }
         let resize_requested = (request.width, request.height)
@@ -440,8 +464,14 @@ fn run(
                         ring.copy_frame(&host.renderer().device, &host.renderer().queue, source)?
                     {
                         applied = revision;
+                        ring.queue_frame(
+                            frame,
+                            FrameId {
+                                generation,
+                                sequence,
+                            },
+                        );
                         sequence += 1;
-                        ring.queue_frame(frame);
                     } else {
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -451,7 +481,7 @@ fn run(
         host.renderer().device.poll(wgpu::PollType::Poll)?;
         #[cfg(target_os = "windows")]
         if let Transport::Shared(ring) = &mut transport
-            && let Some(frame) = ring.take_ready()
+            && let Some((frame, id)) = ring.take_ready()
         {
             published_frames += 1;
             if trace_gpu && published_frames.is_multiple_of(300) {
@@ -469,9 +499,19 @@ fn run(
                 host.renderer().gpu_profile.name,
                 frame.width,
                 frame.height,
-                sequence
+                id.sequence
             );
-            state.image = Some(Arc::new(RenderImage::from_external(frame)));
+            let info = FrameInfo {
+                id,
+                width: frame.width,
+                height: frame.height,
+                color_space: ColorSpace::Gamma22,
+                alpha: AlphaMode::Opaque,
+            };
+            state.image = Some(ViewportFrame {
+                image: Arc::new(RenderImage::from_external(frame)),
+                info,
+            });
             state.changed = true;
         }
         if let Some(entity) = host.poll_pick() {
@@ -484,6 +524,7 @@ fn run(
         if let Transport::Readback(ring) = &mut transport
             && let Some(mut frame) = ring.take_latest()
         {
+            let info = frame.info();
             for pixel in frame.rgba.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
@@ -492,7 +533,7 @@ fn run(
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(image)]));
             let mut state = shared.0.lock().unwrap();
             if frame.id.generation == generation {
-                state.image = Some(image);
+                state.image = Some(ViewportFrame { image, info });
                 state.changed = true;
                 state.diagnostics = format!(
                     "{} {:?} | asynchronous readback | {}x{} | {:.1} ms | {} dropped | {} KiB staging | frame {}",
@@ -551,7 +592,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(40);
         loop {
             let state = worker.shared.0.lock().unwrap();
-            assert!(state.error.is_none(), "{:?}", state.error);
+            assert!(state.status.error.is_none(), "{:?}", state.status.error);
             if predicate(&state) {
                 break;
             }
@@ -572,11 +613,18 @@ mod tests {
             )?)))
         });
         let mut worker = Worker::new(BackendPreference::Readback, factory);
-        wait_for(&worker, |s| s.rendered_frames >= 2);
+        wait_for(&worker, |s| s.rendered_frames >= 2 && s.image.is_some());
+        let original = worker.shared.0.lock().unwrap().image.as_ref().unwrap().info;
+        assert_eq!((original.width, original.height), (640, 480));
+        assert_eq!(original.alpha, AlphaMode::Opaque);
+        let status = worker.presentation_status();
+        assert_eq!(status.active, Some(PresentationBackend::Readback));
+        assert!(status.adapter.is_some() && status.graphics_backend.is_some());
         let mut visibility = crate::visibility::PresentationVisibility::default();
         visibility.set_window(false);
         worker.set_visible(visibility.is_presented());
         wait_for(&worker, |s| s.hidden_ticks >= 2);
+        assert!(!worker.presentation_status().visible);
         let frames = worker.shared.0.lock().unwrap().rendered_frames;
         let mut request = worker.shared.0.lock().unwrap().request;
         request.width = 321;
@@ -591,8 +639,61 @@ mod tests {
         assert_eq!(worker.shared.0.lock().unwrap().rendered_frames, frames);
         visibility.set_panel(true);
         worker.set_visible(visibility.is_presented());
-        wait_for(&worker, |s| s.rendered_frames > frames);
+        wait_for(&worker, |s| {
+            s.image
+                .as_ref()
+                .is_some_and(|frame| frame.info.width == 321 && frame.info.height == 187)
+        });
+        let resized = worker.shared.0.lock().unwrap().image.as_ref().unwrap().info;
+        assert!(resized.id.generation > original.id.generation);
+        assert!(resized.id.sequence > original.id.sequence);
+        assert!(worker.presentation_status().visible);
         assert_eq!(constructions.load(Ordering::SeqCst), 1);
+        worker.shutdown().unwrap().join().unwrap();
+    }
+    #[test]
+    fn forced_backend_failure_is_reported_without_fallback() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let mut worker = Worker::new(
+            BackendPreference::WindowsShared,
+            Arc::new(move |_, _, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                Err("deliberate factory failure".into())
+            }),
+        );
+        worker.shutdown().unwrap().join().unwrap();
+        let status = worker.presentation_status();
+        assert_eq!(status.requested, BackendPreference::WindowsShared);
+        assert_eq!(status.active, None);
+        assert!(status.error.is_some());
+        assert_eq!(status.fallback_reason, None);
+        assert!(calls.load(Ordering::SeqCst) <= 1);
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires a working native GPU adapter"]
+    fn auto_fallback_exposes_actual_backend_and_reason() {
+        let mut worker = Worker::new(
+            BackendPreference::Auto,
+            Arc::new(|backends, w, h| {
+                if backends == wgpu::Backends::DX12 {
+                    return Err("DX12 deliberately unavailable".into());
+                }
+                Ok(Box::new(ContinuousHost(pollster::block_on(
+                    SceneHost::cube_with_backends(w, h, backends),
+                )?)))
+            }),
+        );
+        wait_for(&worker, |s| s.image.is_some());
+        let status = worker.presentation_status();
+        assert_eq!(status.active, Some(PresentationBackend::Readback));
+        assert_eq!(
+            status.fallback_reason.as_deref(),
+            Some("DX12 deliberately unavailable")
+        );
+        assert!(status.error.is_none());
+        assert!(!status.active.unwrap().capabilities().gpu_resident);
         worker.shutdown().unwrap().join().unwrap();
     }
 }

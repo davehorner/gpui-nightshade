@@ -17,3 +17,9 @@ pub type SceneFactory = std::sync::Arc<
         + Send
         + Sync,
 >;
+
+// Embedding applications can inspect presentation without importing native APIs.
+pub use gpui_nightshade::presentation::{
+    AlphaMode, BackendPreference, ColorSpace, FrameId, FrameInfo, PresentationBackend,
+    PresentationCapabilities, PresentationStatus,
+};

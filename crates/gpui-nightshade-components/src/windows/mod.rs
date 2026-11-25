@@ -1,5 +1,5 @@
 //! Unsafe D3D interop is confined to this module and GPUI's shared_texture importer.
-use gpui_nightshade::wgpu;
+use gpui_nightshade::{presentation::FrameId, wgpu};
 use gpui_windows::shared_texture::{SharedFrameOwner, SharedHandle, SharedTexture};
 use std::sync::{
     Arc, Weak,
@@ -32,7 +32,7 @@ pub struct SharedRing {
     luid: u64,
     width: u32,
     height: u32,
-    pending: Vec<Arc<SharedTexture>>,
+    pending: Vec<(Arc<SharedTexture>, FrameId)>,
 }
 impl SharedRing {
     pub fn new(
@@ -183,8 +183,8 @@ impl SharedRing {
     pub fn can_submit(&self) -> bool {
         self.slots.iter().any(Slot::available)
     }
-    pub fn queue_frame(&mut self, frame: Arc<SharedTexture>) {
-        self.pending.push(frame);
+    pub fn queue_frame(&mut self, frame: Arc<SharedTexture>, id: FrameId) {
+        self.pending.push((frame, id));
         debug_assert!(self.pending.len() <= 3);
     }
     pub fn pending_count(&self) -> usize {
@@ -198,8 +198,8 @@ impl SharedRing {
     }
     /// Publish only completed copies. GPUI must not park its presentation queue
     /// behind a producer frame that is still rendering/compiling on another device.
-    pub fn take_ready(&mut self) -> Option<Arc<SharedTexture>> {
-        let index = self.pending.iter().rposition(|frame| {
+    pub fn take_ready(&mut self) -> Option<(Arc<SharedTexture>, FrameId)> {
+        let index = self.pending.iter().rposition(|(frame, _)| {
             self.slots.iter().any(|slot| {
                 slot.texture_handle.raw() == frame.texture_handle.raw()
                     && unsafe {
@@ -365,7 +365,11 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        ring.queue_frame(frame.clone());
+        let id = FrameId {
+            generation: 7,
+            sequence: 42,
+        };
+        ring.queue_frame(frame.clone(), id);
         let withheld = ring.take_ready().is_none();
         // Always release the queue before asserting, so a test failure cannot strand it.
         unsafe { gate.Signal(1) }.unwrap();
@@ -375,7 +379,8 @@ mod tests {
         );
         wait(&ring.slots[0].ready_fence, frame.ready_value);
         let published = ring.take_ready().unwrap();
-        assert!(Arc::ptr_eq(&frame, &published));
+        assert!(Arc::ptr_eq(&frame, &published.0));
+        assert_eq!(published.1, id);
         drop(published);
         let mut ready = None;
         let mut consumed = None;
