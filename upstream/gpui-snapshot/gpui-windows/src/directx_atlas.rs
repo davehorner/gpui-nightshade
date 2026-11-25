@@ -25,6 +25,7 @@ struct DirectXAtlasTextures {
     monochrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     polychrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     subpixel_textures: AtlasTextureList<DirectXAtlasTexture>,
+    retired_external: Vec<DirectXAtlasTexture>,
 }
 
 struct DirectXAtlasTexture {
@@ -45,6 +46,7 @@ impl DirectXAtlas {
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
             subpixel_textures: Default::default(),
+            retired_external: Vec::new(),
         })))
     }
 
@@ -70,6 +72,9 @@ impl DirectXAtlas {
             external: texture.external.clone(),
         })
     }
+    pub(crate) fn collect_retired(&self) {
+        self.0.lock().backend.collect_retired();
+    }
     pub(crate) fn handle_device_lost(
         &self,
         device: &ID3D11Device,
@@ -82,6 +87,7 @@ impl DirectXAtlas {
             textures.monochrome_textures = AtlasTextureList::default();
             textures.polychrome_textures = AtlasTextureList::default();
             textures.subpixel_textures = AtlasTextureList::default();
+            textures.retired_external.clear();
         });
     }
 }
@@ -93,6 +99,7 @@ impl PlatformAtlas for DirectXAtlas {
         owner: std::sync::Arc<dyn gpui::ExternalTexture>,
     ) -> anyhow::Result<AtlasTile> {
         self.0.lock().get_or_insert_tile(key, |backend| {
+            backend.collect_retired();
             let size = owner.size();
             let (texture, imported) =
                 crate::shared_texture::import(&backend.device, &backend.device_context, owner)?;
@@ -179,6 +186,13 @@ impl AtlasBackend for DirectXAtlasTextures {
             texture.decrement_ref_count();
             if texture.is_unreferenced() {
                 textures.free_list.push(texture.id.index as usize);
+                if texture
+                    .external
+                    .as_ref()
+                    .is_some_and(|owner| !owner.is_idle())
+                {
+                    self.retired_external.push(texture);
+                }
             } else {
                 *texture_slot = Some(texture);
             }
@@ -187,6 +201,16 @@ impl AtlasBackend for DirectXAtlasTextures {
 }
 
 impl DirectXAtlasTextures {
+    fn collect_retired(&mut self) {
+        // Retain the producer frame lease as well as native D3D11 objects.
+        // The producer's bounded ring then applies backpressure until retirement.
+        self.retired_external.retain(|texture| {
+            texture
+                .external
+                .as_ref()
+                .is_some_and(|owner| !owner.is_idle())
+        });
+    }
     fn allocate(
         &mut self,
         size: Size<DevicePixels>,
@@ -473,5 +497,174 @@ mod tests {
 
         let tile_b = insert_tile(&atlas, big_key_b, big);
         assert_eq!(tile_b.texture_id, keeper_tile.texture_id);
+    }
+    #[test]
+    #[ignore = "requires native Windows shared D3D11 fences"]
+    fn external_eviction_retains_import_until_consumer_completion() {
+        use crate::shared_texture::{SharedFrameOwner, SharedHandle, SharedTexture};
+        use std::sync::{Arc, atomic::AtomicU64};
+        use windows::{
+            Win32::Graphics::{Direct3D11::*, Dxgi::*},
+            core::{Interface, PCWSTR},
+        };
+        #[derive(Debug)]
+        struct ProducerOwner;
+        impl SharedFrameOwner for ProducerOwner {}
+        struct ReleaseGate(ID3D11DeviceContext4, ID3D11Fence);
+        impl Drop for ReleaseGate {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = self.0.Signal(&self.1, 1);
+                    self.0.Flush();
+                }
+            }
+        }
+        let atlas = create_atlas().expect("WARP device required");
+        let other = create_atlas().expect("second WARP device required");
+        let (device, context) = {
+            let lock = atlas.0.lock();
+            (
+                lock.backend.device.clone(),
+                lock.backend
+                    .device_context
+                    .cast::<ID3D11DeviceContext4>()
+                    .unwrap(),
+            )
+        };
+        let (other_device, other_context) = {
+            let lock = other.0.lock();
+            (
+                lock.backend.device.clone(),
+                lock.backend
+                    .device_context
+                    .cast::<ID3D11DeviceContext4>()
+                    .unwrap(),
+            )
+        };
+        unsafe {
+            let device5: ID3D11Device5 = device.cast().unwrap();
+            let mut ready: Option<ID3D11Fence> = None;
+            let mut consumed: Option<ID3D11Fence> = None;
+            let mut gate: Option<ID3D11Fence> = None;
+            device5
+                .CreateFence(1, D3D11_FENCE_FLAG_SHARED, &mut ready)
+                .unwrap();
+            device5
+                .CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut consumed)
+                .unwrap();
+            device5
+                .CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut gate)
+                .unwrap();
+            let (ready, consumed, gate) = (ready.unwrap(), consumed.unwrap(), gate.unwrap());
+            let gate_handle = SharedHandle::from_owned(
+                gate.CreateSharedHandle(None, 0x10000000, PCWSTR::null())
+                    .unwrap(),
+            );
+            let mut other_gate = None;
+            other_device
+                .cast::<ID3D11Device5>()
+                .unwrap()
+                .OpenSharedFence::<ID3D11Fence>(gate_handle.raw(), &mut other_gate)
+                .unwrap();
+            let release = ReleaseGate(other_context, other_gate.unwrap());
+            let mut texture = None;
+            device
+                .CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        Width: 64,
+                        Height: 64,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                        MiscFlags: (D3D11_RESOURCE_MISC_SHARED_NTHANDLE
+                            | D3D11_RESOURCE_MISC_SHARED)
+                            .0 as u32,
+                        ..Default::default()
+                    },
+                    None,
+                    Some(&mut texture),
+                )
+                .unwrap();
+            let texture = texture.unwrap();
+            let resource: IDXGIResource1 = texture.cast().unwrap();
+            let dxgi: IDXGIDevice = device.cast().unwrap();
+            let luid = dxgi.GetAdapter().unwrap().GetDesc().unwrap().AdapterLuid;
+            let producer = Arc::new(ProducerOwner);
+            let retained = Arc::downgrade(&producer);
+            let frame = Arc::new(SharedTexture {
+                producer_owner: producer,
+                texture_handle: Arc::new(SharedHandle::from_owned(
+                    resource
+                        .CreateSharedHandle(
+                            None,
+                            DXGI_SHARED_RESOURCE_READ.0 | DXGI_SHARED_RESOURCE_WRITE.0,
+                            PCWSTR::null(),
+                        )
+                        .unwrap(),
+                )),
+                ready_fence_handle: Arc::new(SharedHandle::from_owned(
+                    ready
+                        .CreateSharedHandle(None, 0x10000000, PCWSTR::null())
+                        .unwrap(),
+                )),
+                consumed_fence_handle: Arc::new(SharedHandle::from_owned(
+                    consumed
+                        .CreateSharedHandle(None, 0x10000000, PCWSTR::null())
+                        .unwrap(),
+                )),
+                adapter_luid: ((luid.HighPart as u32 as u64) << 32) | luid.LowPart as u64,
+                width: 64,
+                height: 64,
+                ready_value: 1,
+                last_read: Arc::new(AtomicU64::new(0)),
+            });
+            let key = make_image_key(991);
+            let tile = atlas
+                .get_or_insert_external(key.clone(), frame.clone())
+                .unwrap();
+            let binding = atlas.texture_binding(tile.texture_id).unwrap();
+            context.Wait(&gate, 1).unwrap();
+            binding.external.as_ref().unwrap().before_draw().unwrap();
+            // The queued completion is blocked, just as a queued draw would be.
+            binding.external.as_ref().unwrap().after_draw().unwrap();
+            drop(binding);
+            drop(frame);
+            atlas.remove(&key);
+            assert_eq!(atlas.0.lock().backend.retired_external.len(), 1);
+            assert!(
+                retained.upgrade().is_some(),
+                "atlas eviction must retain producer lease"
+            );
+            assert!(
+                atlas.texture_binding(tile.texture_id).is_none(),
+                "retired texture must not be drawable"
+            );
+            drop(release);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let completed = consumed.GetCompletedValue();
+                assert_ne!(completed, u64::MAX, "consumer device lost");
+                if completed >= 1 {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "consumer completion timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            atlas.0.lock().backend.collect_retired();
+            assert!(atlas.0.lock().backend.retired_external.is_empty());
+            assert!(
+                retained.upgrade().is_none(),
+                "completed eviction must release producer lease"
+            );
+        }
     }
 }

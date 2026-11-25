@@ -4,7 +4,7 @@ Native Rust Nightshade rendering inside GPUI elements. Windows has a working D3D
 
 **Status: the trunk viewer core and an initial GPUI editor are implemented; feature parity remains unfinished.** The default editor loads glTF/GLB through trunk's original schedules, displays the hierarchy and inspector, and dispatches scene edits, undo/redo, rendering settings and animation actions through the original action queue. See [implementation status](docs/status.md).
 
-The editor defaults to CPU readback while a full-scene shared-presentation hang is investigated. Diagnostics identify D3D11 consumer removal while headless DX12 passes; [investigation and failure reproducer](docs/windows-gpu-validation.md) document the distinction. Shared presentation remains available explicitly and has previously passed cube/two-viewport checks; full-scene shared stability is not established.
+The editor defaults to CPU readback. Explicit Windows shared-GPU presentation now passes fresh full-viewer runs, model replacement and resize/minimize stress on the tested RTX 4080 after retaining evicted D3D11 imports through consumer completion. See [GPU validation](docs/windows-gpu-validation.md) for results and remaining coverage.
 
 ## Build and run
 

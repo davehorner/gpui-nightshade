@@ -274,7 +274,15 @@ impl DirectXRenderer {
                 crate::shared_texture::report_device_failure(&devices.device);
             }
         }
-        result.ok().context("Presenting swap chain failed")
+        result.ok().context("Presenting swap chain failed")?;
+        if std::env::var_os("GPUI_NIGHTSHADE_TRACE_GPU").is_some() {
+            static PRESENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let count = PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if count.is_multiple_of(300) {
+                eprintln!("GPUI shared compositor: presents_submitted={count}");
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
@@ -376,6 +384,7 @@ impl DirectXRenderer {
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
+        self.atlas.collect_retired();
         let depth_scale = quad_depth_scale(scene.quads.len());
         self.pre_draw(
             &match background_appearance {

@@ -31,6 +31,8 @@ struct State {
     rendered_frames: u64,
     hidden_ticks: u64,
     image: Option<Arc<RenderImage>>,
+    #[cfg(all(test, target_os = "windows"))]
+    native_test_frame: Option<Arc<gpui_windows::shared_texture::SharedTexture>>,
     error: Option<String>,
     pub diagnostics: String,
     selected: Option<u32>,
@@ -64,6 +66,8 @@ impl Worker {
                 rendered_frames: 0,
                 hidden_ticks: 0,
                 image: None,
+                #[cfg(all(test, target_os = "windows"))]
+                native_test_frame: None,
                 error: None,
                 diagnostics: "Initializing GPU".into(),
             }),
@@ -142,6 +146,15 @@ impl Worker {
                 format!("{} | selection {:?}", state.diagnostics, state.selected)
             }),
         )
+    }
+    #[cfg(all(test, target_os = "windows"))]
+    pub(crate) fn take_native_test_frame(
+        &self,
+    ) -> Option<Arc<gpui_windows::shared_texture::SharedTexture>> {
+        let mut state = self.shared.0.lock().unwrap();
+        assert!(state.error.is_none(), "worker error: {:?}", state.error);
+        state.image.take();
+        state.native_test_frame.take()
     }
 }
 
@@ -263,6 +276,7 @@ fn run(
     let mut published_frames = 0u64;
     let started = std::time::Instant::now();
     let mut last_trace = started;
+    let mut last_visible = true;
     let frozen_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("frozen");
     let aligned_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("aligned");
     let fresh_probe = std::env::var("GPUI_NIGHTSHADE_INTEROP_PROBE").as_deref() == Ok("fresh");
@@ -312,6 +326,10 @@ fn run(
         if gpu && aligned_probe {
             request.width = request.width.div_ceil(64) * 64;
             request.height = request.height.div_ceil(64) * 64;
+        }
+        if trace_gpu && last_visible != visible {
+            eprintln!("Shared GPU visibility: visible={visible}");
+            last_visible = visible;
         }
         if !visible {
             if let Some(event) = shared.0.lock().unwrap().input.pop() {
@@ -385,6 +403,12 @@ fn run(
                 )?;
                 if resize_requested {
                     host.resize(request.width, request.height)?;
+                    if gpu && trace_gpu {
+                        eprintln!(
+                            "Shared GPU resize: generation={generation}, size={}x{}",
+                            request.width, request.height
+                        );
+                    }
                 }
                 let previous = std::mem::replace(&mut transport, replacement);
                 #[cfg(not(target_os = "windows"))]
@@ -474,6 +498,10 @@ fn run(
                 frame.height,
                 sequence
             );
+            #[cfg(all(test, target_os = "windows"))]
+            {
+                state.native_test_frame = Some(frame.clone());
+            }
             state.image = Some(Arc::new(RenderImage::from_external(frame)));
             state.changed = true;
         }

@@ -117,6 +117,11 @@ pub struct ImportedTexture {
     context: ID3D11DeviceContext4,
 }
 impl ImportedTexture {
+    pub(crate) fn is_idle(&self) -> bool {
+        let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();
+        let completed = unsafe { self.consumed_fence.GetCompletedValue() };
+        completed != u64::MAX && completed >= frame.last_read.load(Ordering::Acquire)
+    }
     /// Verify producer completion before submitting a draw.
     pub fn before_draw(&self) -> anyhow::Result<()> {
         let frame = self.frame.as_any().downcast_ref::<SharedTexture>().unwrap();

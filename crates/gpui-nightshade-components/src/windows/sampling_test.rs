@@ -6,7 +6,10 @@ use windows::{
     Win32::{
         Foundation::{HMODULE, LUID},
         Graphics::{
-            Direct3D::{Fxc::D3DCompile, *},
+            Direct3D::{
+                Fxc::{D3DCOMPILE_DEBUG, D3DCOMPILE_SKIP_OPTIMIZATION, D3DCompile},
+                *,
+            },
             Direct3D11::*,
             Dxgi::*,
         },
@@ -36,7 +39,11 @@ unsafe fn compile(source: &str, entry: PCSTR, target: PCSTR) -> Vec<u8> {
             None,
             entry,
             target,
-            0,
+            if std::env::var_os("SHARED_SAMPLING_UNOPTIMIZED").is_some() {
+                D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION
+            } else {
+                0
+            },
             0,
             &mut code,
             Some(&mut errors),
@@ -59,68 +66,71 @@ unsafe fn compile(source: &str, entry: PCSTR, target: PCSTR) -> Vec<u8> {
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn changing_shared_frames_sample_without_gpui_compositor() {
-    run_sampling(1, false, false, false);
+    run_sampling(1, false, false, false, false);
 }
 
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn pipelined_shared_frames_sample_without_gpui_compositor() {
-    run_sampling(3, false, false, false);
+    run_sampling(3, false, false, false, false);
 }
 
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn full_viewer_frames_sample_without_gpui_compositor() {
-    run_sampling(3, true, false, false);
+    run_sampling(3, true, false, false, false);
 }
 
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn gpui_sprite_shader_samples_full_viewer_without_swapchain() {
-    run_sampling(3, true, true, false);
+    run_sampling(3, true, true, false, false);
 }
 
 #[test]
 #[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
 fn gpui_sprite_shader_samples_full_viewer_with_unattached_swapchain() {
-    run_sampling(3, true, true, true);
+    run_sampling(3, true, true, true, false);
 }
 
-unsafe fn immutable_buffer(device: &ID3D11Device, words: &[u32], structured: bool) -> ID3D11Buffer {
-    let mut buffer = None;
-    unsafe {
-        device
-            .CreateBuffer(
-                &D3D11_BUFFER_DESC {
-                    ByteWidth: std::mem::size_of_val(words) as u32,
-                    Usage: D3D11_USAGE_IMMUTABLE,
-                    BindFlags: if structured {
-                        D3D11_BIND_SHADER_RESOURCE.0
-                    } else {
-                        D3D11_BIND_CONSTANT_BUFFER.0
-                    } as u32,
-                    MiscFlags: if structured {
-                        D3D11_RESOURCE_MISC_BUFFER_STRUCTURED.0 as u32
-                    } else {
-                        0
-                    },
-                    StructureByteStride: if structured { 96 } else { 0 },
-                    ..Default::default()
-                },
-                Some(&D3D11_SUBRESOURCE_DATA {
-                    pSysMem: words.as_ptr().cast(),
-                    ..Default::default()
-                }),
-                Some(&mut buffer),
-            )
-            .unwrap();
+#[test]
+#[ignore = "requires D3D12/D3D11 sharing on a native Windows GPU"]
+fn render_worker_samples_full_viewer_on_consumer_thread() {
+    run_sampling(3, true, true, true, true);
+}
+
+struct NativeWorker(crate::worker::Worker);
+impl NativeWorker {
+    fn next(&mut self, width: u32, height: u32) -> Arc<SharedTexture> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if let Some(frame) = self.0.take_native_test_frame()
+                && frame.width == width
+                && frame.height == height
+            {
+                return frame;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "render worker publication timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
-    buffer.unwrap()
+}
+impl Drop for NativeWorker {
+    fn drop(&mut self) {
+        if let Some(thread) = self.0.shutdown() {
+            let result = thread.join();
+            if !std::thread::panicking() {
+                result.unwrap();
+            }
+        }
+    }
 }
 
-fn run_sampling(depth: usize, full_scene: bool, gpui_shader: bool, swapchain: bool) {
-    let (width, height) = (1351, 715);
-    let mut host: Box<dyn ViewportHost> = if full_scene {
+fn make_host(full_scene: bool, width: u32, height: u32) -> Box<dyn ViewportHost> {
+    let host: Box<dyn ViewportHost> = if full_scene {
         use nightshade_viewer_core::{
             ViewerArguments, ViewerConnection, ViewerCorePlugin, ViewerRuntime,
         };
@@ -164,13 +174,80 @@ fn run_sampling(depth: usize, full_scene: bool, gpui_shader: bool, swapchain: bo
             .unwrap(),
         )
     };
-    let mut ring = SharedRing::new(&host.renderer().device, width, height).unwrap();
+    host
+}
+
+unsafe fn immutable_buffer(device: &ID3D11Device, words: &[u32], structured: bool) -> ID3D11Buffer {
+    let mut buffer = None;
+    unsafe {
+        device
+            .CreateBuffer(
+                &D3D11_BUFFER_DESC {
+                    ByteWidth: std::mem::size_of_val(words) as u32,
+                    Usage: D3D11_USAGE_IMMUTABLE,
+                    BindFlags: if structured {
+                        D3D11_BIND_SHADER_RESOURCE.0
+                    } else {
+                        D3D11_BIND_CONSTANT_BUFFER.0
+                    } as u32,
+                    MiscFlags: if structured {
+                        D3D11_RESOURCE_MISC_BUFFER_STRUCTURED.0 as u32
+                    } else {
+                        0
+                    },
+                    StructureByteStride: if structured { 96 } else { 0 },
+                    ..Default::default()
+                },
+                Some(&D3D11_SUBRESOURCE_DATA {
+                    pSysMem: words.as_ptr().cast(),
+                    ..Default::default()
+                }),
+                Some(&mut buffer),
+            )
+            .unwrap();
+    }
+    buffer.unwrap()
+}
+
+fn run_sampling(
+    depth: usize,
+    full_scene: bool,
+    gpui_shader: bool,
+    swapchain: bool,
+    threaded: bool,
+) {
+    let (width, height) = (1351, 715);
+    let mut worker = threaded.then(|| {
+        let worker = crate::worker::Worker::new(
+            gpui_nightshade::presentation::BackendPreference::WindowsShared,
+            Arc::new(move |_, w, h| Ok(make_host(true, w, h))),
+        );
+        worker.request(crate::worker::ViewRequest {
+            width,
+            height,
+            yaw: 0.6,
+            pitch: 0.35,
+            distance: 4.,
+            target: [0.; 3],
+            pick: None,
+        });
+        NativeWorker(worker)
+    });
+    let mut host = (!threaded).then(|| make_host(full_scene, width, height));
+    let mut ring = host
+        .as_ref()
+        .map(|host| SharedRing::new(&host.renderer().device, width, height).unwrap());
+    let mut first = worker.as_mut().map(|worker| worker.next(width, height));
+    let luid = first
+        .as_ref()
+        .map(|frame| frame.adapter_luid)
+        .unwrap_or_else(|| ring.as_ref().unwrap().luid);
     unsafe {
         let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).unwrap();
         let adapter: IDXGIAdapter = factory
             .EnumAdapterByLuid(LUID {
-                LowPart: ring.luid as u32,
-                HighPart: (ring.luid >> 32) as i32,
+                LowPart: luid as u32,
+                HighPart: (luid >> 32) as i32,
             })
             .unwrap();
         let mut device = None;
@@ -179,7 +256,12 @@ fn run_sampling(depth: usize, full_scene: bool, gpui_shader: bool, swapchain: bo
             &adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
             HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT
+                | if std::env::var_os("SHARED_SAMPLING_D3D11_DEBUG").is_some() {
+                    D3D11_CREATE_DEVICE_DEBUG
+                } else {
+                    D3D11_CREATE_DEVICE_FLAG(0)
+                },
             Some(&[D3D_FEATURE_LEVEL_11_1]),
             D3D11_SDK_VERSION,
             Some(&mut device),
@@ -357,7 +439,8 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             assert!(frames >= 4, "swapchain test needs at least four samples");
         }
         let mut presents = 0u32;
-        let gate = if depth == 3 && frames >= 3 {
+        let gate = if !threaded && depth == 3 && frames >= 3 {
+            let ring = ring.as_ref().unwrap();
             let fence: ID3D12Fence = ring.device.CreateFence(0, D3D12_FENCE_FLAG_SHARED).unwrap();
             let handle = SharedHandle::from_owned(
                 ring.device
@@ -384,37 +467,69 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
         // still be executing; only the oldest lease applies backpressure.
         let mut in_flight = std::collections::VecDeque::new();
         let mut used_slots = std::collections::HashSet::new();
-        let retire = |(fence, value, _frame, _texture, _srv, _owner)| {
-            super::tests::wait(&fence, value);
+        let retire = |(fence, value, _frame, _texture, _srv, _owner): (
+            ID3D11Fence,
+            u64,
+            Arc<SharedTexture>,
+            ID3D11Texture2D,
+            Option<ID3D11ShaderResourceView>,
+            gpui_windows::shared_texture::ImportedTexture,
+        )| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let completed = fence.GetCompletedValue();
+                assert_ne!(completed, u64::MAX, "consumer device lost");
+                if completed >= value {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "consumer fence timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         };
         for index in 0..frames {
             if in_flight.len() == depth {
                 retire(in_flight.pop_front().unwrap());
             }
-            if !full_scene {
-                host.set_camera(CameraPose {
-                    yaw: index as f32 * 0.01,
-                    pitch: 0.35,
-                    distance: 4.,
-                    target: [0.; 3],
-                });
-            }
-            host.render().unwrap();
-            let frame = ring
-                .copy_frame(
-                    &host.renderer().device,
-                    &host.renderer().queue,
-                    host.renderer().external_output.as_ref().unwrap(),
-                )
+            let frame = if let Some(worker) = &mut worker {
+                first.take().unwrap_or_else(|| worker.next(width, height))
+            } else {
+                let host = host.as_mut().unwrap();
+                let ring = ring.as_mut().unwrap();
+                if !full_scene {
+                    host.set_camera(CameraPose {
+                        yaw: index as f32 * 0.01,
+                        pitch: 0.35,
+                        distance: 4.,
+                        target: [0.; 3],
+                    });
+                }
+                host.render().unwrap();
+                let frame = ring
+                    .copy_frame(
+                        &host.renderer().device,
+                        &host.renderer().queue,
+                        host.renderer().external_output.as_ref().unwrap(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                let slot = ring
+                    .slots
+                    .iter()
+                    .find(|slot| slot.leased.ptr_eq(&Arc::downgrade(&frame)))
+                    .unwrap();
+                super::tests::wait(&slot.ready_fence, frame.ready_value);
+                frame
+            };
+            used_slots.insert(frame.texture_handle.raw().0 as usize);
+            let mut consumed = None;
+            device
+                .cast::<ID3D11Device5>()
                 .unwrap()
+                .OpenSharedFence::<ID3D11Fence>(frame.consumed_fence_handle.raw(), &mut consumed)
                 .unwrap();
-            let slot = ring
-                .slots
-                .iter()
-                .find(|slot| slot.leased.ptr_eq(&Arc::downgrade(&frame)))
-                .unwrap();
-            used_slots.insert(slot.texture_handle.raw().0 as usize);
-            super::tests::wait(&slot.ready_fence, frame.ready_value);
             let (texture, owner) =
                 gpui_windows::shared_texture::import(&device, &context, frame.clone()).unwrap();
             let mut srv = None;
@@ -429,7 +544,7 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             context.DrawInstanced(4, 1, 0, 0);
             owner.after_draw().unwrap();
             in_flight.push_back((
-                slot.consumed_fence.clone(),
+                consumed.unwrap(),
                 frame.last_read.load(Ordering::Acquire),
                 frame,
                 texture,
@@ -441,10 +556,10 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             {
                 // All three consumers are behind the gate. Their native frame
                 // leases must keep all allocations unavailable to the producer.
-                let pending = ring
-                    .slots
-                    .iter()
-                    .all(|slot| !slot.available() && slot.consumed_fence.GetCompletedValue() == 0);
+                let pending =
+                    ring.as_ref().unwrap().slots.iter().all(|slot| {
+                        !slot.available() && slot.consumed_fence.GetCompletedValue() == 0
+                    });
                 gate.0.Signal(1).unwrap();
                 assert!(
                     pending,
@@ -516,7 +631,7 @@ float4 ps(Out i):SV_Target { return image.Sample(sampler0,i.uv); }
             colors.len()
         );
         eprintln!(
-            "standalone D3D11: swapchain={}, presents={presents}, gpui_shader={gpui_shader}, full_scene={full_scene}, depth={depth}, {frames} samples, {} colors, {width}x{height}",
+            "standalone D3D11: threaded={threaded}, swapchain={}, presents={presents}, gpui_shader={gpui_shader}, full_scene={full_scene}, depth={depth}, {frames} samples, {} colors, {width}x{height}",
             swapchain.is_some(),
             colors.len()
         );

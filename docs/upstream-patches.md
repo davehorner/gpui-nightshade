@@ -12,7 +12,7 @@ Changes are isolated to nightshade-wgpu: optional-surface initialization retaini
 
 `patches/gpui/0001-shared-external-images.patch` is a reviewable diff against the pristine `gpui-pre` and `gpui-pre-windows` 0.3.14 source exports. Paths are relative to `upstream/gpui-snapshot`; the source changes are already applied there. Export provenance is Zed `f126950f9d3b62666f97437ae5d4ccac2272c4db`, as declared by those published packages. Root Cargo patches select the local exports. Their normalized manifests are kept so the exact matching registry family remains usable without cloning the entire Zed dependency workspace.
 
-Generic changes: owned `ExternalTexture` images, external atlas import with explicit unsupported errors, and a cache insertion helper. The Windows atlas allocates a whole imported texture as a polychrome tile. Existing sprite shaders/order/masks handle it. Windows-only code owns NT handles, checks LUIDs and descriptors, and enqueues producer/consumer fence operations around sprite drawing. Last-frame eviction drops the imported resource lease.
+Generic changes: owned `ExternalTexture` images, external atlas import with explicit unsupported errors, and a cache insertion helper. The Windows atlas allocates a whole imported texture as a polychrome tile. Existing sprite shaders/order/masks handle it. Windows-only code owns NT handles, checks LUIDs and descriptors, and enqueues producer/consumer fence operations around sprite drawing. Last-frame eviction retires imported native objects and the producer lease until consumer completion.
 
 ## Unsafe review notes
 
@@ -24,3 +24,5 @@ This is a source/lifetime self-review and runtime validation on one adapter. Ind
 
 
 `0003-consumer-sampling-isolation.patch` pins each sampled view with its matching synchronization owner in one atlas lookup, unbinds shared shader resources before signaling, and exposes draw hooks for native sampling validation. Opt-in interop probes isolate import/signaling/frozen sampling from live scene drawing; these modes are diagnostic only. A separate serialized fullscreen D3D11 sampling test passes 600 changing-camera cube frames, while full-viewer shared presentation remains failing.
+
+`0004-retain-evicted-shared-imports.patch` keeps evicted external atlas entries out of drawable lookup while retaining native D3D11 objects and their producer lease until consumer fence completion. Collection runs before rendering/import; producer leases provide backpressure. A shared-fence-gated WARP regression verifies eviction/retention/release. Opt-in diagnostics count successful Present submissions. The matching application stress driver exercises native resize, dock reset and minimize/restore; fresh full-viewer checks now pass on the tested RTX 4080. See [current GPU validation](windows-gpu-validation.md).
