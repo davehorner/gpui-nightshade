@@ -18,6 +18,14 @@ Select a mesh with morph targets to edit its indexed weights (0–1) in the insp
 
 Core tests exercise player/layer actions, actual morph state, owned snapshots and skeleton toggling. UI binding tests reject invalid weights and stale scene/layer edits. Live Windows checks loaded AnimatedMorphCube, added a layer and verified a GPUI weight edit through MCP, paused playback and visibly changed the morph, then loaded SimpleSkin and verified its skeleton toggle and two-joint count. Undo/Redo buttons reflect trunk history availability; creation is not recorded by trunk's current history implementation. Core regression tests verify transform, light and camera edit undo.
 
+## Docking
+
+Scene, Viewport, Inspector and Animation are retained native dock panels. Drag a panel title into another panel's body to create a tab group, or towards an edge to split it. Drag dividers to resize. The title's ellipsis menu offers Zoom In/Out; **Reset layout** restores the default split arrangement and exits panel zoom.
+
+Moving, tabbing and resetting retain the same viewport entity, worker, scene, selection and input fields. Panels observe editor changes through weak references so tabbed inspectors continue receiving current snapshots without retaining the editor after window closure. Core panels cannot be closed. The asset browser stays above the docking area.
+
+Live Windows checks covered inspector-to-viewport tab grouping, switching back to the rendered scene, splitter resizing, panel zoom and layout reset. A cube created while the viewport was hidden appeared on return, and MCP confirmed identical entity/selection/transform before and after reset. Layouts are currently session-only; saving/restoring layouts across launches and suspending hidden viewport rendering remain unfinished.
+
 ## Rendering and output
 
 The inspector has fixed Selection and Rendering tabs. Rendering exposes exposure/scale, native dropdowns for shading/PBR debug/tonemapping/AA/atmosphere, grid/normals/bounds, bloom/SSAO/SSR/SSGI, sky, sun direction/intensity/shadows, fog color/range and depth-of-field focus settings. Fields apply on Enter. HDR atmosphere remains disabled until an HDR sky is loaded. The underlying dispatcher retains trunk's clamps and settings behavior.
@@ -42,4 +50,4 @@ The original agent plugin runs on the same worker-owned world used by the editor
 
 ## Remaining work
 
-Docking, local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, broader render-mode validation, conversion UI, drag/drop and gizmo pointer routing remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.
+Persistent dock layouts, local preview generation, complete PBR controls, advanced skeleton/retargeting coverage, broader render-mode validation, conversion UI, asset drag/drop and broader gizmo validation remain unfinished. Camera clipping and light editing have core regression coverage; native dialog texture replacement and the expanded camera UI have not yet received end-to-end automation coverage. Full-scene shared presentation stability is unresolved.

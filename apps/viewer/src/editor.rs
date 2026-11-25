@@ -1,4 +1,5 @@
 mod animation;
+mod docking;
 mod rendering;
 use animation::{WeightEditor, WeightTarget};
 use gpui_kit::base::Disableable;
@@ -22,6 +23,7 @@ use nightshade_viewer_core::{
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 struct Editor {
+    dock: docking::EditorDock,
     viewport: Entity<NightshadeViewport>,
     connection: ViewerConnection,
     snapshot: Option<Arc<ViewerSnapshot>>,
@@ -121,7 +123,9 @@ impl Editor {
                 }
             }
         });
+        let dock = docking::EditorDock::new(cx.entity().downgrade(), window, cx);
         Self {
+            dock,
             viewport,
             connection,
             snapshot: None,
@@ -501,33 +505,9 @@ impl Editor {
             .into_any_element()
     }
 }
-impl Render for Editor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Editor {
+    fn hierarchy_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let snapshot = self.snapshot.clone();
-        self.thumbnails.update(
-            snapshot
-                .as_ref()
-                .and_then(|s| s.browser.as_ref())
-                .into_iter()
-                .flat_map(|b| b.entries.iter().map(|e| e.key.clone())),
-            window,
-        );
-        if let Some(snapshot) = &snapshot {
-            let selected = snapshot.selection.selected.map(|e| (e.id, e.generation));
-            if selected != self.field_selection {
-                if !self.render_page {
-                    self.inspector_scroll.set_offset(point(px(0.), px(0.)));
-                }
-                if self.fields.iter().enumerate().any(|(i, field)| {
-                    matches!(i,0..=5|8..=20) && field.focus_handle(cx).is_focused(window)
-                }) {
-                    window.focus(&self.viewport.focus_handle(cx), cx);
-                }
-                self.field_selection = selected;
-            }
-            self.sync_fields(snapshot, window, cx);
-            self.sync_weight_fields(snapshot, window, cx);
-        }
         let mut tree = div()
             .id("scene-tree")
             .flex()
@@ -573,6 +553,16 @@ impl Render for Editor {
                 );
             }
         }
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(0x20242d))
+            .child(tree)
+            .into_any_element()
+    }
+    fn inspector_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let snapshot = self.snapshot.clone();
         let mut inspector = div()
             .id("inspector-body")
             .track_scroll(&self.inspector_scroll)
@@ -780,14 +770,43 @@ impl Render for Editor {
             }
         }
         let inspector = div()
-            .w(px(310.))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()
             .bg(rgb(0x20242d))
             .child(inspector_tabs)
             .child(inspector);
-        let timeline = snapshot.as_ref().map(|s| self.animation_panel(s, cx));
+        inspector.into_any_element()
+    }
+}
+impl Render for Editor {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let snapshot = self.snapshot.clone();
+        self.thumbnails.update(
+            snapshot
+                .as_ref()
+                .and_then(|s| s.browser.as_ref())
+                .into_iter()
+                .flat_map(|b| b.entries.iter().map(|e| e.key.clone())),
+            window,
+        );
+        if let Some(snapshot) = &snapshot {
+            let selected = snapshot.selection.selected.map(|e| (e.id, e.generation));
+            if selected != self.field_selection {
+                if !self.render_page {
+                    self.inspector_scroll.set_offset(point(px(0.), px(0.)));
+                }
+                if self.fields.iter().enumerate().any(|(i, field)| {
+                    matches!(i,0..=5|8..=20) && field.focus_handle(cx).is_focused(window)
+                }) {
+                    window.focus(&self.viewport.focus_handle(cx), cx);
+                }
+                self.field_selection = selected;
+            }
+            self.sync_fields(snapshot, window, cx);
+            self.sync_weight_fields(snapshot, window, cx);
+        }
 
         div()
             .key_context("NightshadeEditor")
@@ -832,6 +851,13 @@ impl Render for Editor {
                     .items_center()
                     .flex_wrap()
                     .child("NIGHTSHADE")
+                    .child(
+                        Button::new("reset-layout")
+                            .label("Reset layout")
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.dock.reset(window, cx);
+                            })),
+                    )
                     .child(self.action_button("open", "Open model", Action::ImportFile, cx))
                     .child(self.action_button(
                         "assets",
@@ -930,43 +956,11 @@ impl Render for Editor {
             )
             .child(
                 div()
-                    .flex()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .w(px(240.))
-                            .h_full()
-                            .bg(rgb(0x20242d))
-                            .child(div().p_3().child("SCENE"))
-                            .child(tree),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .h_full()
-                            .overflow_hidden()
-                            .child(self.viewport.clone())
-                            .when(self.overlay, |pane| {
-                                pane.child(
-                                    div()
-                                        .absolute()
-                                        .top_4()
-                                        .left_4()
-                                        .p_4()
-                                        .bg(rgb(0x35435c))
-                                        .rounded_md()
-                                        .child("GPUI overlay over the live viewer scene"),
-                                )
-                            }),
-                    )
-                    .child(inspector),
+                    .child(self.dock.area.clone()),
             )
-            .when_some(timeline, |root, timeline| root.child(timeline))
             .child(
                 div()
                     .px_2()
@@ -995,6 +989,7 @@ pub fn launch(backend: BackendPreference, arguments: ViewerArguments) {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
             let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
             gpui_kit::open_window(
                 WindowOptions {

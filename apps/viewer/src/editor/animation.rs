@@ -281,7 +281,7 @@ impl Editor {
         }
         div()
             .id("animation-panel")
-            .max_h(px(180.))
+            .h_full()
             .overflow_y_scroll()
             .flex_shrink_0()
             .flex()
