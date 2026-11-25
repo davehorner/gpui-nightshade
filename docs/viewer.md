@@ -22,6 +22,10 @@ Material controls also include Opaque/Mask/Blend/Dither alpha modes, alpha cutof
 
 Invalid advanced values report the field name and its accepted range in the status message. MCP `get_material` includes every advanced scalar so remote validation can inspect effective values after UI edits.
 
+The separate Opacity slider below Alpha mode edits base-color alpha from 0–100% in 1% steps and preserves RGB. Use Blend mode for partial transparency; the slider does not change alpha mode automatically. RGBA edits, MCP changes, reset and undo/redo synchronize the slider from effective material state. Selection changes cancel an active opacity gesture so its remaining events cannot edit the next material.
+
+Live Vulkan-sharing validation changed the cube from 30% to 74% using the slider; MCP confirmed alpha changed while RGB and Blend mode stayed unchanged. Toolbar Undo restored 30%, including the slider's effective value. The material dispatcher regression also checks RGB preservation, alpha application, invalid values and undo.
+
 Point/spot lights can be created from the toolbar. Light inspectors expose RGB, intensity, range, cone angles in degrees and shadows. Light-marker materials are hidden so the actual light controls remain accessible. Selected cameras expose perspective FOV, near/far clipping and camera activation; perspective far clip zero means infinite. A button restores the editor camera.
 
 Playback controls include clip selection, play/pause, stop, seek, positive speed, looping and blend duration. Each clip can be added as a layer; layer weights apply on Enter and layers can be removed. Duplicate layer additions are disabled. Dynamic fields are bound to the current scene root, clip and entity generation, and stale fields are released when the model or layer changes.

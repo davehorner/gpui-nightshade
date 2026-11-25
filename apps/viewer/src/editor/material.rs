@@ -1,6 +1,43 @@
 use super::*;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use nightshade_viewer_core::{ALPHA_LABELS, MaterialControl};
+use std::time::Instant;
+
+pub(super) struct OpacityEditor {
+    pub slider: Entity<SliderState>,
+    target: Option<(nightshade_viewer_core::SceneEntity, String)>,
+    dragging: bool,
+    blocked_until_release: bool,
+    pending: Option<(f32, Instant)>,
+}
+impl OpacityEditor {
+    pub fn new(cx: &mut Context<Editor>) -> Self {
+        Self {
+            slider: cx.new(|_| {
+                SliderState::new()
+                    .min(0.)
+                    .max(1.)
+                    .step(0.01)
+                    .default_value(1.)
+            }),
+            target: None,
+            dragging: false,
+            blocked_until_release: false,
+            pending: None,
+        }
+    }
+}
+
+fn opacity_action(snapshot: &ViewerSnapshot, opacity: f32) -> Option<Action> {
+    snapshot.selection.material.as_ref()?;
+    if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+        return None;
+    }
+    let mut color = snapshot.selection.material_values.base_color;
+    color[3] = opacity;
+    Some(Action::SetMaterialField(MaterialField::BaseColor(color)))
+}
 
 const FIRST_FIELD: usize = 33;
 
@@ -46,6 +83,65 @@ pub(super) fn field_action(
 }
 
 impl Editor {
+    pub(super) fn apply_opacity(&mut self, event: &SliderEvent, cx: &mut Context<Self>) {
+        let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+        if self.opacity.blocked_until_release {
+            if matches!(event, SliderEvent::Release(_)) {
+                self.opacity.blocked_until_release = false;
+            }
+            return;
+        }
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let target = snapshot
+            .selection
+            .selected
+            .zip(snapshot.selection.material.clone());
+        if target.is_none() || target != self.opacity.target {
+            return;
+        }
+        let Some(action) = opacity_action(snapshot, value.start()) else {
+            return;
+        };
+        self.opacity.dragging = matches!(event, SliderEvent::Change(_));
+        self.opacity.pending = Some((value.start(), Instant::now()));
+        self.send(action, cx);
+    }
+
+    pub(super) fn sync_opacity(
+        &mut self,
+        snapshot: &ViewerSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = snapshot
+            .selection
+            .selected
+            .zip(snapshot.selection.material.clone());
+        if target != self.opacity.target {
+            self.opacity.blocked_until_release |= self.opacity.dragging;
+            self.opacity.target = target;
+            self.opacity.dragging = false;
+            self.opacity.pending = None;
+        }
+        let value = snapshot.selection.material_values.base_color[3].clamp(0., 1.);
+        if let Some((pending, since)) = self.opacity.pending {
+            if (pending - value).abs() < 0.0001 || since.elapsed() > Duration::from_secs(1) {
+                self.opacity.pending = None;
+            } else {
+                return;
+            }
+        }
+        if !self.opacity.dragging
+            && (self.opacity.slider.read(cx).value().start() - value).abs() > 0.0001
+        {
+            self.opacity
+                .slider
+                .update(cx, |slider, cx| slider.set_value(value, window, cx));
+        }
+    }
+
     pub(super) fn advanced_material_panel(
         &self,
         snapshot: &ViewerSnapshot,
@@ -76,7 +172,21 @@ impl Editor {
                 }
                 menu
             });
-        let mut panel = div().flex().flex_col().gap_2().child(alpha);
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(alpha)
+            .child(format!(
+                "Opacity: {:.0}%",
+                self.opacity.slider.read(cx).value().start() * 100.
+            ))
+            .child(Slider::new(&self.opacity.slider).accessibility_label("Material opacity"))
+            .child(if current == 0 {
+                "Choose Blend mode to display partial opacity."
+            } else {
+                "Opacity edits base-color alpha; RGB stays unchanged."
+            });
         for (offset, (control, label)) in CONTROLS.iter().enumerate() {
             let (_, min, max, _) = control.row(&snapshot.selection.material_values);
             panel = panel
@@ -92,7 +202,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONTROLS, FIRST_FIELD, field_action, field_error};
+    use super::{CONTROLS, FIRST_FIELD, field_action, field_error, opacity_action};
     use nightshade_viewer_core::{
         ALPHA_LABELS, MaterialField, PrimitiveKind, ViewerAction as Action, ViewerArguments,
         ViewerCorePlugin, compose, snapshot, submit,
@@ -120,6 +230,26 @@ mod tests {
         }
         let initial = snapshot(&app.world);
         assert!(initial.selection.material.is_some());
+        let action = opacity_action(&initial, 0.3).unwrap();
+        submit(&mut app.world, action).unwrap();
+        app.world.increment_tick();
+        app.stages.run(&mut app.world);
+        let changed = snapshot(&app.world).selection.material_values.base_color;
+        assert_eq!(
+            &changed[..3],
+            &initial.selection.material_values.base_color[..3]
+        );
+        assert_eq!(changed[3], 0.3);
+        for invalid in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+            assert!(opacity_action(&initial, invalid).is_none());
+        }
+        submit(&mut app.world, Action::Undo).unwrap();
+        app.world.increment_tick();
+        app.stages.run(&mut app.world);
+        assert_eq!(
+            snapshot(&app.world).selection.material_values.base_color,
+            initial.selection.material_values.base_color
+        );
         for mode in 0..ALPHA_LABELS.len() {
             submit(
                 &mut app.world,

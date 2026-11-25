@@ -39,6 +39,7 @@ struct Editor {
     field_selection: Option<(u32, u32)>,
     thumbnails: crate::thumbnails::Thumbnails,
     weights: HashMap<WeightTarget, WeightEditor>,
+    opacity: material::OpacityEditor,
     render_page: bool,
     inspector_scroll: ScrollHandle,
 }
@@ -97,7 +98,7 @@ impl Editor {
             .iter()
             .map(|label| cx.new(|cx| InputState::new(window, cx).placeholder(*label)))
             .collect();
-        let subscriptions = fields
+        let mut subscriptions: Vec<Subscription> = fields
             .iter()
             .enumerate()
             .map(|(index, field)| {
@@ -108,6 +109,10 @@ impl Editor {
                 })
             })
             .collect();
+        let opacity = material::OpacityEditor::new(cx);
+        subscriptions.push(cx.subscribe(&opacity.slider, |view, _, event, cx| {
+            view.apply_opacity(event, cx);
+        }));
         let poll = cx.spawn(async |view, cx| {
             loop {
                 cx.background_executor()
@@ -148,6 +153,7 @@ impl Editor {
             field_selection: None,
             thumbnails: Default::default(),
             weights: HashMap::new(),
+            opacity,
             render_page: false,
             inspector_scroll: ScrollHandle::new(),
         }
@@ -827,6 +833,7 @@ impl Render for Editor {
                 self.field_selection = selected;
             }
             self.sync_fields(snapshot, window, cx);
+            self.sync_opacity(snapshot, window, cx);
             self.sync_weight_fields(snapshot, window, cx);
         }
 
