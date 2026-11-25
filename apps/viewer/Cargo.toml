@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 gpui-nightshade-components = { path = "../../crates/gpui-nightshade-components" }
+
+gpui-nightshade = {path="../../crates/gpui-nightshade"}
+nightshade-viewer-core = {path="../../crates/nightshade-viewer-core"}

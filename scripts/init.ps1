@@ -14,11 +14,14 @@ foreach ($entry in $pins.GetEnumerator()) {
     if ($actual -ne $entry.Value) { throw "Wrong $($entry.Key) revision: $actual" }
 }
 if (!$VerifyOnly) {
-    git -C upstream/nightshade apply --check ../../patches/nightshade/0001-external-output.patch 2>$null
-    if ($LASTEXITCODE -eq 0) {git -C upstream/nightshade apply ../../patches/nightshade/0001-external-output.patch}
-    else {
-        git -C upstream/nightshade apply --reverse --check ../../patches/nightshade/0001-external-output.patch
-        if ($LASTEXITCODE) {throw 'Nightshade patch conflicts with local changes'}
+    foreach ($patch in @('0001-external-output.patch', '0002-embedded-viewer-core.patch')) {
+        $patchPath = "../../patches/nightshade/$patch"
+        git -C upstream/nightshade apply --check $patchPath 2>$null
+        if ($LASTEXITCODE -eq 0) {git -C upstream/nightshade apply $patchPath}
+        else {
+            git -C upstream/nightshade apply --reverse --check $patchPath
+            if ($LASTEXITCODE) {throw "Nightshade patch $patch conflicts with local changes"}
+        }
     }
 }
 Write-Output 'Upstream revisions verified.'

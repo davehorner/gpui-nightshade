@@ -199,6 +199,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
+name = "android_log-sys"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85965b6739a430150bdd138e2374a98af0c3ee0d030b3bb7fc3bddff58d0102e"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -219,10 +225,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "anstream"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
+dependencies = [
+ "anstyle",
+ "anstyle-parse",
+ "anstyle-query",
+ "anstyle-wincon",
+ "colorchoice",
+ "is_terminal_polyfill",
+ "utf8parse",
+]
+
+[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+
+[[package]]
+name = "anstyle-parse"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
+dependencies = [
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle-query"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "anstyle-wincon"
+version = "3.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+dependencies = [
+ "anstyle",
+ "once_cell_polyfill",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "anyhow"
@@ -319,12 +369,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "ascii"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
+
+[[package]]
 name = "ash"
 version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
  "libloading",
+]
+
+[[package]]
+name = "ashpd"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f3f79755c74fd155000314eb349864caa787c6592eace6c6882dad873d9c39"
+dependencies = [
+ "enumflags2",
+ "futures-channel",
+ "futures-util",
+ "rand 0.9.5",
+ "raw-window-handle",
+ "serde",
+ "serde_repr",
+ "tokio",
+ "url",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -613,6 +690,12 @@ checksum = "a3a647dce9631f152a99ec16cfc09267ae55fe280d5dc288964027d458076323"
 
 [[package]]
 name = "base64"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
+
+[[package]]
+name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
@@ -642,6 +725,12 @@ checksum = "fd9bde5e9547958fb0e77d79fc7879edcf91d5e0c8e372ef8959916cf35e8506"
 dependencies = [
  "cc",
 ]
+
+[[package]]
+name = "bevy_mikktspace"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bff34eb29ff4b8a8688bc7299f14fb6b597461ca80fec03ed7d22939ab33e48f"
 
 [[package]]
 name = "bit-set"
@@ -949,6 +1038,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "chunked_transfer"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -958,6 +1053,46 @@ dependencies = [
  "inout",
  "zeroize",
 ]
+
+[[package]]
+name = "clap"
+version = "4.6.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50066ca966813ca8957ee15361752f19424a8ff620dbe9c8993d9f99d99b04b3"
+dependencies = [
+ "clap_builder",
+ "clap_derive",
+]
+
+[[package]]
+name = "clap_builder"
+version = "4.6.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0ed97c96ef4efb3cc84e09fa388df4463e7cc3224ec38d7b1d9e45749333590"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap_lex",
+ "strsim",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4c174f11f949b9ca8c60580925e282b9cbd5454750e506f08648b2038080cd7"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
+name = "clap_lex"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 
 [[package]]
 name = "clipboard-win"
@@ -1025,6 +1160,12 @@ name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
+
+[[package]]
+name = "colorchoice"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "combine"
@@ -1441,6 +1582,7 @@ checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.5",
 ]
 
@@ -1511,6 +1653,20 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "ehttp"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d1c51126a4e8242c5b3bcd4c5b350ed3540f0c13c10e0c3c840a3833fa3474c"
+dependencies = [
+ "document-features",
+ "js-sys",
+ "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "either"
@@ -2284,6 +2440,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "gltf"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3ce1918195723ce6ac74e80542c5a96a40c2b26162c1957a5cd70799b8cacf7"
+dependencies = [
+ "base64 0.13.1",
+ "byteorder",
+ "gltf-json",
+ "image",
+ "lazy_static",
+ "serde_json",
+ "urlencoding",
+]
+
+[[package]]
+name = "gltf-derive"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14070e711538afba5d6c807edb74bcb84e5dbb9211a3bf5dea0dfab5b24f4c51"
+dependencies = [
+ "inflections",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "gltf-json"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6176f9d60a7eab0a877e8e96548605dedbde9190a7ae1e80bbcc1c9af03ab14"
+dependencies = [
+ "gltf-derive",
+ "serde",
+ "serde_derive",
+ "serde_json",
+]
+
+[[package]]
 name = "glutin_wgl_sys"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2332,7 +2527,7 @@ version = "0.11.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
- "ashpd",
+ "ashpd 0.13.13",
  "async-channel",
  "data-url",
  "futures",
@@ -2476,7 +2671,7 @@ dependencies = [
  "smallvec",
  "spin 0.10.1",
  "strum",
- "taffy",
+ "taffy 0.15.1",
  "thiserror 2.0.21",
  "tiny-skia-path",
  "ttf-parser",
@@ -2538,7 +2733,7 @@ dependencies = [
  "accesskit_unix",
  "anyhow",
  "as-raw-xcb-connection",
- "ashpd",
+ "ashpd 0.13.13",
  "bytemuck",
  "calloop 0.14.5",
  "calloop-wayland-source 0.4.1",
@@ -2803,7 +2998,9 @@ dependencies = [
 name = "gpui-nightshade-viewer"
 version = "0.1.0"
 dependencies = [
+ "gpui-nightshade",
  "gpui-nightshade-components",
+ "nightshade-viewer-core",
 ]
 
 [[package]]
@@ -2858,7 +3055,7 @@ dependencies = [
  "smallvec",
  "spin 0.10.1",
  "strum",
- "taffy",
+ "taffy 0.15.1",
  "thiserror 2.0.21",
  "tiny-skia-path",
  "ttf-parser",
@@ -2983,7 +3180,7 @@ dependencies = [
  "accesskit_unix",
  "anyhow",
  "as-raw-xcb-connection",
- "ashpd",
+ "ashpd 0.13.13",
  "bytemuck",
  "calloop 0.14.5",
  "calloop-wayland-source 0.4.1",
@@ -3312,6 +3509,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "grid"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36119f3a540b086b4e436bb2b588cf98a68863470e0e880f4d0842f112a3183a"
+
+[[package]]
 name = "h2"
 version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3509,6 +3712,12 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hybrid-array"
@@ -3825,6 +4034,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "inflections"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a257582fdcde896fd96463bf2d40eefea0580021c0712a0e2b028b60b47a837a"
+
+[[package]]
 name = "inotify"
 version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3910,6 +4125,12 @@ dependencies = [
  "is-docker",
  "once_cell",
 ]
+
+[[package]]
+name = "is_terminal_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
@@ -4710,6 +4931,109 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshade-acoustics"
+version = "0.1.0"
+dependencies = [
+ "nalgebra-glm",
+ "nightshade-ecs",
+ "nightshade-scene",
+]
+
+[[package]]
+name = "nightshade-animation"
+version = "0.1.0"
+dependencies = [
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-ecs",
+ "nightshade-platform",
+ "nightshade-render",
+ "nightshade-scene",
+ "petgraph",
+ "serde",
+]
+
+[[package]]
+name = "nightshade-app"
+version = "0.1.0"
+dependencies = [
+ "nightshade",
+ "nightshade-camera",
+ "nightshade-cli",
+ "nightshade-log",
+ "nightshade-platform",
+ "nightshade-wgpu",
+ "nightshade-wgpu-acoustics",
+ "nightshade-wgpu-debug",
+ "nightshade-wgpu-decals",
+ "nightshade-wgpu-geometry",
+ "nightshade-wgpu-near",
+ "nightshade-wgpu-outline",
+ "nightshade-wgpu-paint",
+ "nightshade-wgpu-particles",
+ "nightshade-wgpu-portals",
+ "nightshade-wgpu-screenspace",
+ "nightshade-wgpu-sdf",
+ "nightshade-wgpu-shading",
+ "nightshade-wgpu-shadow",
+ "nightshade-wgpu-sky",
+ "nightshade-wgpu-sprites",
+ "nightshade-wgpu-text",
+ "nightshade-window",
+]
+
+[[package]]
+name = "nightshade-camera"
+version = "0.1.0"
+dependencies = [
+ "enum2schema",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-ecs",
+ "nightshade-platform",
+ "nightshade-render",
+ "nightshade-scene",
+ "serde",
+]
+
+[[package]]
+name = "nightshade-camera-controller"
+version = "0.1.0"
+dependencies = [
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-camera",
+ "nightshade-ecs",
+ "nightshade-input",
+ "nightshade-platform",
+ "nightshade-render",
+ "nightshade-scene",
+ "serde",
+]
+
+[[package]]
+name = "nightshade-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "js-sys",
+ "nightshade",
+ "nightshade-platform",
+ "nightshade-render",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "nightshade-decals"
+version = "0.1.0"
+dependencies = [
+ "enum2schema",
+ "nalgebra-glm",
+ "nightshade-scene",
+ "serde",
+]
+
+[[package]]
 name = "nightshade-ecs"
 version = "0.1.0"
 dependencies = [
@@ -4725,6 +5049,29 @@ version = "0.1.0"
 dependencies = [
  "nightshade-platform",
  "serde",
+]
+
+[[package]]
+name = "nightshade-gltf"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bevy_mikktspace",
+ "gltf",
+ "image",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-animation",
+ "nightshade-camera",
+ "nightshade-graphics",
+ "nightshade-load",
+ "nightshade-prefab",
+ "nightshade-render",
+ "nightshade-scene",
+ "nightshade-worker",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -4757,6 +5104,69 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshade-load"
+version = "0.1.0"
+dependencies = [
+ "ehttp",
+ "nightshade-worker",
+]
+
+[[package]]
+name = "nightshade-log"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "nightshade",
+ "nightshade-platform",
+ "tracing-android",
+ "tracing-subscriber",
+ "tracing-web",
+]
+
+[[package]]
+name = "nightshade-near"
+version = "0.1.0"
+dependencies = [
+ "nalgebra-glm",
+ "nightshade-ecs",
+]
+
+[[package]]
+name = "nightshade-paint"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-text",
+ "serde",
+]
+
+[[package]]
+name = "nightshade-particles"
+version = "0.1.0"
+dependencies = [
+ "enum2schema",
+ "nalgebra-glm",
+ "nightshade-ecs",
+ "nightshade-platform",
+ "serde",
+]
+
+[[package]]
+name = "nightshade-picking"
+version = "0.1.0"
+dependencies = [
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-camera",
+ "nightshade-ecs",
+ "nightshade-platform",
+ "nightshade-render",
+ "nightshade-scene",
+]
+
+[[package]]
 name = "nightshade-platform"
 version = "0.1.0"
 dependencies = [
@@ -4775,6 +5185,29 @@ dependencies = [
  "web-time",
  "webbrowser",
  "winit",
+]
+
+[[package]]
+name = "nightshade-portal"
+version = "0.1.0"
+dependencies = [
+ "nalgebra-glm",
+ "nightshade-ecs",
+]
+
+[[package]]
+name = "nightshade-prefab"
+version = "0.1.0"
+dependencies = [
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-animation",
+ "nightshade-camera",
+ "nightshade-graphics",
+ "nightshade-render",
+ "nightshade-scene",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -4809,6 +5242,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshade-sdf"
+version = "0.1.0"
+dependencies = [
+ "enum2schema",
+ "nalgebra-glm",
+ "nightshade-ecs",
+ "nightshade-scene",
+ "serde",
+]
+
+[[package]]
+name = "nightshade-sprite"
+version = "0.1.0"
+dependencies = [
+ "enum2schema",
+ "nalgebra-glm",
+ "nightshade-platform",
+ "nightshade-scene",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nightshade-store"
 version = "0.1.0"
 dependencies = [
@@ -4825,7 +5281,42 @@ dependencies = [
  "cosmic-text",
  "enum2schema",
  "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-scene",
  "serde",
+]
+
+[[package]]
+name = "nightshade-ui"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-input",
+ "nightshade-paint",
+ "nightshade-platform",
+ "nightshade-render",
+ "nightshade-scene",
+ "nightshade-text",
+ "serde",
+ "taffy 0.7.7",
+]
+
+[[package]]
+name = "nightshade-viewer-core"
+version = "0.1.0"
+dependencies = [
+ "gpui-nightshade",
+ "nightshade",
+ "nightshade-camera",
+ "nightshade-camera-controller",
+ "nightshade-platform",
+ "nightshade-wgpu",
+ "nightshade-window",
+ "pollster",
+ "viewer",
 ]
 
 [[package]]
@@ -4858,6 +5349,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshade-wgpu-acoustics"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-acoustics",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-debug"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "nightshade-wgpu-geometry",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-decals"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-decals",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
 name = "nightshade-wgpu-geometry"
 version = "0.1.0"
 dependencies = [
@@ -4876,6 +5406,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshade-wgpu-near"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-near",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
 name = "nightshade-wgpu-outline"
 version = "0.1.0"
 dependencies = [
@@ -4884,6 +5427,73 @@ dependencies = [
  "nightshade-render",
  "nightshade-wgpu",
  "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-paint"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-paint",
+ "nightshade-render",
+ "nightshade-text",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-particles"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "image",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-particles",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "nightshade-wgpu-geometry",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-portals"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-portal",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-screenspace"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-sdf"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-sdf",
+ "nightshade-wgpu",
+ "nightshade-wgpu-shading",
 ]
 
 [[package]]
@@ -4900,6 +5510,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshade-wgpu-shadow"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "naga_oil",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "nightshade-wgpu-shading",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-sky"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "half",
+ "image",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-sprites"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-sprite",
+ "nightshade-wgpu",
+ "tracing",
+]
+
+[[package]]
+name = "nightshade-wgpu-text"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-render",
+ "nightshade-text",
+ "nightshade-wgpu",
+ "nightshade-wgpu-geometry",
+ "tracing",
+]
+
+[[package]]
 name = "nightshade-window"
 version = "0.1.0"
 dependencies = [
@@ -4909,8 +5574,11 @@ dependencies = [
  "js-sys",
  "nalgebra-glm",
  "nightshade",
+ "nightshade-camera",
+ "nightshade-cli",
  "nightshade-graphics",
  "nightshade-input",
+ "nightshade-log",
  "nightshade-platform",
  "nightshade-render",
  "nightshade-scene",
@@ -5646,13 +6314,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "once_cell_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
 name = "oo7"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78f2bfed90f1618b4b48dcad9307f25e14ae894e2949642c87c351601d62cebd"
 dependencies = [
  "aes",
- "ashpd",
+ "ashpd 0.13.13",
  "async-fs",
  "async-io",
  "async-lock",
@@ -6557,6 +7231,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rfd"
+version = "0.15.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef2bee61e6cffa4635c72d7d81a84294e28f0930db0ddcb0f66d10244674ebed"
+dependencies = [
+ "ashpd 0.11.1",
+ "block2 0.6.2",
+ "dispatch2",
+ "js-sys",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "pollster",
+ "raw-window-handle",
+ "urlencoding",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "rgb"
 version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6747,6 +7445,7 @@ version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -7425,6 +8124,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "strsim"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
 name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7562,6 +8267,18 @@ checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "taffy"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab4f4d046dd956a47a7e1a2947083d7ac3e6aa3cfaaead36173ceaa5ab11878c"
+dependencies = [
+ "arrayvec",
+ "grid",
+ "serde",
+ "slotmap",
 ]
 
 [[package]]
@@ -7755,6 +8472,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiny_http"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
+dependencies = [
+ "ascii",
+ "chunked_transfer",
+ "httpdate",
+ "log",
+]
+
+[[package]]
 name = "tinystr"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7781,7 +8510,9 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -7977,6 +8708,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-android"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12612be8f868a09c0ceae7113ff26afe79d81a24473a393cb9120ece162e86c0"
+dependencies = [
+ "android_log-sys",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8027,6 +8769,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-web"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad1b385bc34748a00827cfaf5862756937e6738d6df2c9921a1a01ee39fd9bdb"
+dependencies = [
+ "js-sys",
+ "tracing-core",
+ "tracing-subscriber",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "triomphe"
 version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8057,6 +8812,12 @@ name = "twox-hash"
 version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
+
+[[package]]
+name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
 
 [[package]]
 name = "typenum"
@@ -8154,6 +8915,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "ureq"
+version = "3.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
+dependencies = [
+ "base64 0.23.1",
+ "flate2",
+ "log",
+ "percent-encoding",
+ "rustls",
+ "rustls-pki-types",
+ "ureq-proto",
+ "utf8-zero",
+ "webpki-roots",
+]
+
+[[package]]
+name = "ureq-proto"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622dce33c252115466d83f63e9744a18f12b4406aae51a01c15ad8fcf1185eb3"
+dependencies = [
+ "base64 0.23.1",
+ "http",
+ "httparse",
+ "log",
+]
+
+[[package]]
 name = "url"
 version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8163,7 +8953,14 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "usvg"
@@ -8199,6 +8996,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
+name = "utf8-zero"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c0a043c9540bae7c578c88f91dda8bd82e59ae27c21baca69c8b191aaf5a6e"
+
+[[package]]
 name = "utf8_iter"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8206,6 +9009,12 @@ checksum = "af3bd9d3e571c26fcce9d033b87ea5ab061b8d2ffe9b7a5675d810d68f03edf0"
 dependencies = [
  "utf_types",
 ]
+
+[[package]]
+name = "utf8parse"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "utf_types"
@@ -8248,6 +9057,45 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "viewer"
+version = "0.1.0"
+dependencies = [
+ "ehttp",
+ "enum2schema",
+ "fastrand",
+ "image",
+ "nalgebra-glm",
+ "nightshade",
+ "nightshade-animation",
+ "nightshade-app",
+ "nightshade-camera",
+ "nightshade-camera-controller",
+ "nightshade-cli",
+ "nightshade-gltf",
+ "nightshade-graphics",
+ "nightshade-load",
+ "nightshade-log",
+ "nightshade-picking",
+ "nightshade-platform",
+ "nightshade-prefab",
+ "nightshade-render",
+ "nightshade-scene",
+ "nightshade-store",
+ "nightshade-text",
+ "nightshade-ui",
+ "nightshade-window",
+ "percent-encoding",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "wasm-bindgen-futures",
+ "zip",
+]
 
 [[package]]
 name = "vswhom"
@@ -8533,6 +9381,15 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "url",
  "web-sys",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -9819,6 +10676,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",
@@ -10116,6 +10974,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
+ "zopfli",
+]
+
+[[package]]
 name = "zlib-rs"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10126,6 +10998,18 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zopfli"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaf7fc5d30c28483d93805c4a5e12b05bbb52407fa67c5f8bd552374cd01fb11"
+dependencies = [
+ "bumpalo",
+ "crc32fast",
+ "log",
+ "simd-adler32",
+]
 
 [[package]]
 name = "zruntime"
@@ -10174,6 +11058,7 @@ dependencies = [
  "enumflags2",
  "serde",
  "serde_bytes",
+ "url",
  "winnow 1.0.5",
  "zcheapstr",
  "zvariant_derive",

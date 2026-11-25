@@ -128,7 +128,7 @@ enum Transport {
 }
 impl Transport {
     fn new(
-        host: &gpui_nightshade::host::SceneHost,
+        host: &dyn gpui_nightshade::host::ViewportHost,
         width: u32,
         height: u32,
         generation: u64,
@@ -137,18 +137,18 @@ impl Transport {
         #[cfg(target_os = "windows")]
         if shared {
             return Ok(Self::Shared(crate::windows::SharedRing::new(
-                &host.renderer.device,
+                &host.renderer().device,
                 width,
                 height,
             )?));
         }
         let _ = shared;
         Ok(Self::Readback(ReadbackRing::new(
-            &host.renderer.device,
+            &host.renderer().device,
             width,
             height,
             generation,
-            host.renderer.surface_format,
+            host.renderer().surface_format,
             AlphaMode::Opaque,
             3,
         )?))
@@ -213,12 +213,12 @@ fn run(
         )?
     };
     let mut generation = 0;
-    let mut transport = match Transport::new(&host, 640, 480, 0, gpu) {
+    let mut transport = match Transport::new(host.as_ref(), 640, 480, 0, gpu) {
         Ok(transport) => transport,
         Err(error) if choice == BackendPreference::Auto => {
             eprintln!("shared allocation unavailable: {error}; selecting readback");
             gpu = false;
-            Transport::new(&host, 640, 480, 0, false)?
+            Transport::new(host.as_ref(), 640, 480, 0, false)?
         }
         Err(error) => return Err(error),
     };
@@ -226,6 +226,7 @@ fn run(
     let mut sequence = 0;
     let mut pick_sequence = None;
     let mut pick_pending = false;
+    let mut last_camera = None;
     loop {
         transport.check_device()?;
         let (request, revision, fallback) = {
@@ -234,6 +235,7 @@ fn run(
                 && state.revision == applied
                 && transport.in_flight() == 0
                 && !pick_pending
+                && !host.continuous()
             {
                 state = shared.1.wait(state).unwrap();
             }
@@ -244,9 +246,9 @@ fn run(
         };
         if gpu && fallback && transport.can_resize() {
             transport = Transport::new(
-                &host,
-                host.renderer.surface_config.width,
-                host.renderer.surface_config.height,
+                host.as_ref(),
+                host.renderer().surface_config.width,
+                host.renderer().surface_config.height,
                 generation,
                 false,
             )?;
@@ -255,10 +257,10 @@ fn run(
         }
         let resize_requested = (request.width, request.height)
             != (
-                host.renderer.surface_config.width,
-                host.renderer.surface_config.height,
+                host.renderer().surface_config.width,
+                host.renderer().surface_config.height,
             );
-        if revision != applied
+        if (revision != applied || host.continuous())
             && transport.can_submit()
             && (!resize_requested || transport.can_resize())
         {
@@ -268,36 +270,46 @@ fn run(
             }
             if (request.width, request.height)
                 != (
-                    host.renderer.surface_config.width,
-                    host.renderer.surface_config.height,
+                    host.renderer().surface_config.width,
+                    host.renderer().surface_config.height,
                 )
             {
                 generation += 1;
                 // Validate replacement allocations before replacing the live generation.
-                let replacement =
-                    Transport::new(&host, request.width, request.height, generation, gpu)?;
-                host.renderer
-                    .set_owned_output(request.width, request.height)?;
+                let replacement = Transport::new(
+                    host.as_ref(),
+                    request.width,
+                    request.height,
+                    generation,
+                    gpu,
+                )?;
+                host.resize(request.width, request.height)?;
                 transport = replacement;
             }
-            host.yaw = request.yaw;
-            host.pitch = request.pitch;
-            host.distance = request.distance;
-            host.target = nightshade_math(request.target);
+            let camera = gpui_nightshade::host::CameraPose {
+                yaw: request.yaw,
+                pitch: request.pitch,
+                distance: request.distance,
+                target: request.target,
+            };
+            if last_camera != Some(camera) {
+                host.set_camera(camera);
+                last_camera = Some(camera);
+            }
             if let Some((x, y, sequence)) = request.pick
                 && pick_sequence != Some(sequence)
             {
-                host.pick_request = Some((x, y));
+                host.request_pick(x, y);
                 pick_sequence = Some(sequence);
                 pick_pending = true;
             }
             host.render()?;
-            let source = host.renderer.external_output.as_ref().unwrap();
+            let source = host.renderer().external_output.as_ref().unwrap();
             match &mut transport {
                 Transport::Readback(ring) => {
                     if ring.enqueue(
-                        &host.renderer.device,
-                        &host.renderer.queue,
+                        &host.renderer().device,
+                        &host.renderer().queue,
                         source,
                         sequence,
                     )? {
@@ -308,7 +320,7 @@ fn run(
                 #[cfg(target_os = "windows")]
                 Transport::Shared(ring) => {
                     if let Some(frame) =
-                        ring.copy_frame(&host.renderer.device, &host.renderer.queue, source)?
+                        ring.copy_frame(&host.renderer().device, &host.renderer().queue, source)?
                     {
                         applied = revision;
                         sequence += 1;
@@ -318,7 +330,7 @@ fn run(
                             state.changed = true;
                             state.diagnostics = format!(
                                 "{} DX12 -> D3D11 shared texture | GPU copy | {}x{} | frame {}",
-                                host.renderer.gpu_profile.name,
+                                host.renderer().gpu_profile.name,
                                 request.width,
                                 request.height,
                                 sequence
@@ -330,7 +342,7 @@ fn run(
                 }
             }
         }
-        host.renderer.device.poll(wgpu::PollType::Poll)?;
+        host.renderer().device.poll(wgpu::PollType::Poll)?;
         if let Some(entity) = host.poll_pick() {
             pick_pending = false;
             let mut state = shared.0.lock().unwrap();
@@ -344,17 +356,6 @@ fn run(
             for pixel in frame.rgba.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
-            let non_black = frame
-                .rgba
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .filter(|p| p[0] != 0 || p[1] != 0 || p[2] != 0)
-                .count();
-            eprintln!(
-                "frame {} {}x{} non-black={}",
-                frame.id.sequence, frame.width, frame.height, non_black
-            );
             let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
                 .ok_or("invalid frame length")?;
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(image)]));
@@ -364,8 +365,8 @@ fn run(
                 state.changed = true;
                 state.diagnostics = format!(
                     "{} {:?} | asynchronous readback | {}x{} | {:.1} ms | {} dropped | {} KiB staging",
-                    host.renderer.gpu_profile.name,
-                    host.renderer.gpu_profile.backend,
+                    host.renderer().gpu_profile.name,
+                    host.renderer().gpu_profile.backend,
                     frame.width,
                     frame.height,
                     frame.latency.as_secs_f64() * 1000.,
@@ -374,12 +375,10 @@ fn run(
                 );
             }
         }
-        if transport.in_flight() > 0 || revision != applied || pick_pending {
+        if host.continuous() {
+            std::thread::sleep(Duration::from_millis(16));
+        } else if transport.in_flight() > 0 || revision != applied || pick_pending {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
-}
-
-fn nightshade_math(v: [f32; 3]) -> gpui_nightshade::host::Vector3 {
-    gpui_nightshade::host::Vector3::new(v[0], v[1], v[2])
 }

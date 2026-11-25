@@ -6,7 +6,7 @@
 
 Changes are isolated to nightshade-wgpu: optional-surface initialization retaining the native constructor, surface-free creation with explicit backend selection, validated owned/external output attachment, external-target availability in frame dispatch, clearing external output on native surface recreation, and a public re-export of existing depth-pick readback.
 
-The original viewer is not refactored yet, and the original trunk viewer passes a locked cargo check with this patch. Existing applications are not claimed runtime regression-tested. The native constructor still queries native surface capabilities and configures/presents normally. Output rendering reuses the existing graph instead of replacing postprocessing.
+`0002-embedded-viewer-core.patch` separates the viewer schedules from native UI, introduces owned snapshots/action submission and embedded application composition, and retains `ViewerPlugin` as the original frontend composition. Tests exercise native startup and UI-free edits/undo. The original trunk viewer passes a cargo check with the rendering patch. Existing applications are not claimed runtime regression-tested. The native constructor still queries native surface capabilities and configures/presents normally. Output rendering reuses the existing graph instead of replacing postprocessing.
 
 ## GPUI
 

@@ -215,3 +215,62 @@ pub fn block_on_cube_with_backends(
 ) -> Result<SceneHost, Box<dyn std::error::Error>> {
     pollster::block_on(SceneHost::cube_with_backends(width, height, backends))
 }
+
+/// Camera controls shared by simple scenes and full ECS-backed viewer hosts.
+#[derive(Clone, Copy, PartialEq)]
+pub struct CameraPose {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+    pub target: [f32; 3],
+}
+
+/// Worker-owned rendering lifecycle. A host is constructed on the render thread;
+/// it need not be Send, and may retain Nightshade schedules and plugin guards.
+pub trait ViewportHost {
+    fn renderer(&self) -> &WgpuRenderer;
+    fn renderer_mut(&mut self) -> &mut WgpuRenderer;
+    fn render(&mut self) -> Result<(), Box<dyn std::error::Error>>;
+    fn set_camera(&mut self, pose: CameraPose);
+    fn request_pick(&mut self, x: u32, y: u32);
+    fn poll_pick(&mut self) -> Option<Option<u32>>;
+    fn continuous(&self) -> bool {
+        false
+    }
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+        self.renderer_mut().set_owned_output(width, height)
+    }
+}
+impl ViewportHost for SceneHost {
+    fn renderer(&self) -> &WgpuRenderer {
+        &self.renderer
+    }
+    fn renderer_mut(&mut self) -> &mut WgpuRenderer {
+        &mut self.renderer
+    }
+    fn render(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        SceneHost::render(self)
+    }
+    fn set_camera(&mut self, pose: CameraPose) {
+        self.yaw = pose.yaw;
+        self.pitch = pose.pitch;
+        self.distance = pose.distance;
+        self.target = glm::Vec3::from(pose.target);
+    }
+    fn request_pick(&mut self, x: u32, y: u32) {
+        self.pick_request = Some((x, y));
+    }
+    fn poll_pick(&mut self) -> Option<Option<u32>> {
+        SceneHost::poll_pick(self)
+    }
+}
+/// Default factory for the independently usable cube viewport.
+pub fn cube_viewport(
+    backends: nightshade_wgpu::wgpu::Backends,
+    width: u32,
+    height: u32,
+) -> Result<Box<dyn ViewportHost>, Box<dyn std::error::Error>> {
+    Ok(Box::new(block_on_cube_with_backends(
+        backends, width, height,
+    )?))
+}

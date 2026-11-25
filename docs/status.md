@@ -1,29 +1,18 @@
 # Implementation status and remaining work
 
-| Milestone | Evidence / status |
-| --- | --- |
-| 1. Inspect and pin | Complete for source investigation; component-compatible GPUI snapshot exact pin recorded |
-| 2. Feasibility report | Source-backed report in presentation.md |
-| 3. Surface-free cube | Compiled and executed; GPU pixel diversity and picking checked |
-| 4. GPUI readback viewport | Compiled, visible cube and camera orbit verified in the native UI |
-| 5. Input/resize/DPI/picking | Implemented core coordinates, orbit/pan/zoom, focus, picking and outlines; pointer capture, DnD and visibility lifecycle unfinished |
-| 6. Windows GPU presentation | Shared texture import/copy/fences visibly verified on RTX 4080, including two viewports; long stress/device loss and broader drivers unverified |
-| 7. Viewer core extraction | Not implemented |
-| 8–9. Full GPUI editor / parity | Not implemented; current viewer-named binary is a viewport demonstrator |
-| 10. macOS/Linux GPU sharing | Investigated, not implemented |
-| 11. Benchmark/optimize | Actual debug readback measurements only; GPU-path timing and optimization incomplete |
-| 12. Patch/API docs | Current integration documented; API is experimental |
+The default executable now runs the trunk viewer core inside the GPUI-owned window. `--cube` retains the presentation demonstrator; `--model=PATH` loads into the actual viewer world.
 
-## Viewer extraction work identified from actual trunk
+Implemented this milestone:
 
-The original `apps/viewer` source is retained unchanged. `data.rs::ViewerAction` remains the dispatcher to reuse. No competing full-viewer action protocol has been introduced.
+- `ViewerCorePlugin` and `NativeViewerUiPlugin`, with the original `ViewerPlugin` composing both. Core startup and update schedules run without a retained UI runtime.
+- Embedded composition with caller-owned arguments and no native Nightshade event loop or window.
+- Bounded action submission and owned hierarchy, selection, material, animation, render settings and history snapshots. Existing viewer actions and native agent plugin are reused.
+- A worker-owned full viewer frame lifecycle, loading/extraction/render hooks, continuous simulation and resize handling.
+- GPUI hierarchy selection, transform/name fields, metallic/roughness, visibility/delete, primitive creation, undo/redo, exposure/grid/bloom and basic animation controls. Inspector fields apply on Enter.
+- Original native frontend startup regression test, core edits/undo/snapshot ownership test, and bounded frontend queue test.
 
-`resources.rs::Stage` requires `RetainedUiRuntime` alongside scene/material/load/selection resources. `systems/actions.rs::apply_actions` mixes panel/browser state and core scene commands. `systems/setup.rs::initialize` uses that Stage; `systems/settings.rs::load_settings` directly changes runtime visibility. `plugin.rs` combines UI construction/relayout/poll/list rebuild/refresh with picking, gizmos, loading, animation and agent serving. `commands/agent.rs` and `queries/agent.rs` already expose native control and should feed the same action queue and immutable snapshots after extraction.
+Validation: workspace check, tests and strict Clippy pass. A surface-free bundled DamagedHelmet load rendered 1,303 distinct colors in the initial headless check. The GPUI editor displayed its hierarchy and model, but the shared presentation run reported D3D device removal/HRESULT 0x887A0006. A fresh isolated Vulkan run also passed with 1,287 distinct colors, and a 120-frame run completed with 8,917 colors. Native GPUI validation confirmed textured model display, hierarchy selection, inspector population and primitive creation. Shared full-scene stability and a specific root cause remain unverified. The editor defaults to readback while this is investigated.
 
-The remaining refactor must split Stage/resource access and UI-only actions, introduce ViewerCorePlugin/NativeViewerUiPlugin while keeping ViewerPlugin as the composition used by the original app, then expose action submission and owned scene/selection/material/animation snapshots. Merely re-exporting ViewerAction without those schedules would not preserve functionality.
+The previous cube milestones remain: surface-free rendering, asynchronous readback, Windows D3D12/D3D11 shared textures and fences, DPI coordinates, picking/outline, camera orbit/pan/zoom, GPUI overlay and independent multi-viewport display. Broader drivers, long stress and device recreation remain unverified.
 
-All requested glTF/GLB loading, hierarchy/multi-selection, editing, material/texture operations, animation/morph/skeleton tools, lights/cameras, undo/redo, libraries/Khronos/Polyhaven, atmosphere, screenshots/export, FBX conversion and MCP features remain available in the untouched upstream viewer, but **are not available in the GPUI demonstrator**. Their GPUI frontend and native MCP integration remain required work, not completed parity.
-
-No `just gltf` command or fake feature panels were added. A meaningful glTF recipe must load into the GPUI-owned scene through the extracted viewer core rather than launch the old native viewer or silently show a cube.
-
-Other outstanding work: continuous simulation scheduling, mouse capture outside the viewport, keyboard shortcuts/palette, file dialogs/DnD, docking, shared-world camera viewports, visibility suspension, device recreation, HDR/exact-sRGB validation, detailed GPU/upload/present metrics and upstream application regression builds.
+Remaining viewer work includes docking, complete material/texture/light/camera/morph/skeleton inspectors, asset-browser/search/thumbnails, atmosphere, export/screenshots, conversion UI, drag/drop, gizmo pointer routing, capture outside the viewport, shortcut focus handling, native MCP end-to-end validation and feature parity checks. The core still compiles upstream UI dependencies although it does not instantiate their runtime. Non-Windows GPU sharing, visibility suspension, shared-world multi-camera views, HDR/color validation and detailed GPU timings remain unfinished.

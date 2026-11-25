@@ -22,11 +22,7 @@ impl NightshadeViewport {
         backend: gpui_nightshade::presentation::BackendPreference,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::from_factory(
-            backend,
-            Arc::new(gpui_nightshade::host::block_on_cube_with_backends),
-            cx,
-        )
+        Self::from_factory(backend, Arc::new(gpui_nightshade::host::cube_viewport), cx)
     }
     /// Creates a viewport whose scene is built entirely on the render worker.
     pub fn from_factory(
@@ -86,6 +82,11 @@ impl NightshadeViewport {
             focus: cx.focus_handle(),
             _poll: poll,
         }
+    }
+}
+impl Focusable for NightshadeViewport {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 impl Render for NightshadeViewport {

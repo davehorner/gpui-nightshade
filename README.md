@@ -2,7 +2,9 @@
 
 Native Rust Nightshade rendering inside GPUI elements. Windows has a working D3D12-to-D3D11 shared-texture presentation path, and a separate asynchronous CPU readback reference backend. GPUI owns the window and event loop. No browser, hidden Nightshade window, or second presenter is used.
 
-**Status: viewport integration, not a completed trunk-viewer port.** The full viewer core extraction, glTF frontend, docking and feature parity remain unfinished. See [implementation status](docs/status.md). The application currently demonstrates cubes, orbit/pan/zoom, GPU picking, outlines, overlays, DPI-aware resizing and independent viewports.
+**Status: the trunk viewer core and an initial GPUI editor are implemented; feature parity remains unfinished.** The default editor loads glTF/GLB through trunk's original schedules, displays the hierarchy and inspector, and dispatches scene edits, undo/redo, rendering settings and animation actions through the original action queue. See [implementation status](docs/status.md).
+
+The editor defaults to CPU readback while a full-scene D3D12 device hang is investigated. Shared presentation remains available explicitly and has previously passed cube/two-viewport checks; full-scene shared stability is not established.
 
 ## Build and run
 
@@ -16,14 +18,14 @@ just test-gpu
 just headless
 just viewer
 just cube readback
-just viewer windows-shared
+just gltf C:/models/scene.glb readback
 just multi-viewport
 just benchmark
 just fmt
 just clippy
 ```
 
-Equivalent launch: `cargo run -p gpui-nightshade-viewer -- --presentation=auto`.
+Equivalent editor launch: `cargo run -p gpui-nightshade-viewer -- --presentation=readback`. Use `--model=C:/models/scene.glb`, `--no-agent` or `--agent-port=PORT` as needed. The original native agent plugin is composed against the same worker-owned world; its end-to-end GPUI validation remains pending.
 `--presentation=readback` forces CPU transfer. `windows-shared` requires the GPU backend and never falls back. `auto` selects shared presentation on Windows and falls back to readback after allocation/import failure; its diagnostics identify the active transport. `GPUI_NIGHTSHADE_PRESENTATION` supplies the default when no CLI selection is present.
 
 Left drag orbits; Shift+left drag pans; wheel zooms; clicking picks using physical viewport-local coordinates. The overlay button demonstrates GPUI content above the scene. `--multi-viewport` creates two independent scene hosts, not two cameras sharing one ECS.
@@ -44,7 +46,7 @@ GPUI snapshot packages are exported upstream sources under `upstream/gpui-snapsh
 
 ## Integration and verification
 
-`gpui-nightshade` owns the scene host, frame metadata, coordinate conversion and bounded readback ring. `gpui-nightshade-components::NightshadeViewport` is a reusable GPUI view. Custom scene hosts can be supplied with `NightshadeViewport::from_factory` and `SceneHost::from_single_view`. Each view constructs and owns its renderer on a dedicated worker; the UI receives immutable image handles. Camera configuration uses a coalesced mailbox.
+`nightshade-viewer-core` runs the extracted trunk schedules and publishes owned snapshots through a bounded frontend bridge. `gpui-nightshade` owns the scene host, frame metadata, coordinate conversion and bounded readback ring. `gpui-nightshade-components::NightshadeViewport` is a reusable GPUI view. Custom scene hosts can be supplied with `NightshadeViewport::from_factory` and `SceneHost::from_single_view`. Each view constructs and owns its renderer on a dedicated worker; the UI receives immutable image handles. Camera configuration uses a coalesced mailbox.
 
 The external GPU image extension reuses GPUI's regular polychrome sprite primitive. It preserves layout, content masks, scene ordering, opacity and atlas eviction rather than adding an independent native visual tree.
 

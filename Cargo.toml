@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gpui-nightshade", "crates/gpui-nightshade-components", "apps/viewer"]
+members = ["crates/gpui-nightshade", "crates/gpui-nightshade-components", "apps/viewer", "crates/nightshade-viewer-core"]
 default-members = ["crates/gpui-nightshade"]
 exclude = ["upstream/nightshade", "upstream/zed", "upstream/gpui-component"]
 resolver = "2"
@@ -26,5 +26,3 @@ path = "upstream/nightshade/crates/plugins/draw/nightshade-wgpu-outline"
 [patch.crates-io]
 gpui-pre = { path = "upstream/gpui-snapshot/gpui" }
 gpui-pre-windows = { path = "upstream/gpui-snapshot/gpui-windows" }
-
-

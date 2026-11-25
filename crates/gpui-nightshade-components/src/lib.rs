@@ -11,7 +11,8 @@ pub type SceneFactory = std::sync::Arc<
             gpui_nightshade::wgpu::Backends,
             u32,
             u32,
-        ) -> Result<gpui_nightshade::host::SceneHost, Box<dyn std::error::Error>>
+        )
+            -> Result<Box<dyn gpui_nightshade::host::ViewportHost>, Box<dyn std::error::Error>>
         + Send
         + Sync,
 >;

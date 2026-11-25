@@ -20,10 +20,13 @@ headless:
     cargo run --locked --example headless
 
 cube backend="auto":
+    cargo run --locked -p gpui-nightshade-viewer -- --cube --presentation={{backend}}
+
+viewer backend="readback":
     cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}}
 
-viewer backend="auto":
-    cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}}
+gltf model backend="readback":
+    cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}} --model="{{model}}"
 
 multi-viewport backend="auto":
     cargo run --locked -p gpui-nightshade-viewer -- --presentation={{backend}} --multi-viewport
@@ -32,7 +35,7 @@ benchmark:
     cargo run --locked --example presentation_benchmark
 
 fmt:
-    cargo fmt -p gpui-nightshade -p gpui-nightshade-components -p gpui-nightshade-viewer
+    cargo fmt -p gpui-nightshade -p gpui-nightshade-components -p gpui-nightshade-viewer -p nightshade-viewer-core
 
 clippy:
     cargo clippy --workspace --all-targets --locked -- -D warnings

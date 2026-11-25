@@ -1,0 +1,711 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 96196fe..0afd255 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4615,6 +4615,7 @@ name = "nightshade-app"
+ version = "0.1.0"
+ dependencies = [
+  "nightshade",
++ "nightshade-camera",
+  "nightshade-cli",
+  "nightshade-log",
+  "nightshade-platform",
+diff --git a/apps/viewer/src/lib.rs b/apps/viewer/src/lib.rs
+index a79ef92..7f1eeed 100644
+--- a/apps/viewer/src/lib.rs
++++ b/apps/viewer/src/lib.rs
+@@ -1,3 +1,4 @@
++pub mod core;
+ mod commands;
+ mod components;
+ mod data;
+@@ -7,7 +8,7 @@ mod resources;
+ mod systems;
+ mod theme;
+ 
+-use plugin::ViewerPlugin;
++pub use plugin::{ViewerPlugin,ViewerCorePlugin,NativeViewerUiPlugin};
+ use resources::ViewerArguments;
+ 
+ pub fn launch() -> Result<(), Box<dyn std::error::Error>> {
+diff --git a/apps/viewer/src/plugin.rs b/apps/viewer/src/plugin.rs
+index 39e3a74..21e4e67 100644
+--- a/apps/viewer/src/plugin.rs
++++ b/apps/viewer/src/plugin.rs
+@@ -1,43 +1,64 @@
+-use nightshade::prelude::*;
+-use nightshade_platform::prelude::*;
+-
+ use crate::resources::{ViewerArguments, ViewerResources};
+ use crate::systems;
++use nightshade::prelude::*;
++use nightshade_platform::prelude::*;
+ 
++/// The original native viewer composition, retaining all frontend systems.
+ pub struct ViewerPlugin;
+-
+ impl Plugin for ViewerPlugin {
++    fn build(&self, app: &mut App) {
++        app.add_plugin(ViewerCorePlugin::default())
++            .add_plugin(NativeViewerUiPlugin);
++    }
++}
++
++/// Scene/action/asset/agent systems usable without retained-mode UI resources.
++pub struct ViewerCorePlugin {
++    pub persist_settings: bool,
++    pub remote_catalogs: bool,
++}
++impl Default for ViewerCorePlugin {
++    fn default() -> Self {
++        Self {
++            persist_settings: true,
++            remote_catalogs: true,
++        }
++    }
++}
++impl Plugin for ViewerCorePlugin {
+     fn build(&self, app: &mut App) {
+         app.world.res_mut::<Window>().title = "Nightshade Viewer".to_string();
+         if app.world.res::<ViewerArguments>().preview {
+             app.world.res_mut::<Window>().start_hidden = true;
+         }
+         app.insert_resource(ViewerResources::default());
++        app.insert_resource(crate::core::FrontendInput::default());
+         #[cfg(not(target_arch = "wasm32"))]
+         compose_agent(app);
+         app.add_system(Stage::Startup, systems::setup::initialize);
+-        app.add_system(Stage::Startup, systems::settings::load_settings);
+-        app.add_system(Stage::Startup, systems::interface::build_ui);
++        if self.persist_settings {
++            app.add_system(Stage::Startup, systems::settings::load_settings);
++        }
++        app.add_system(Stage::Update, crate::core::advance_history);
+         app.add_system(
+             Stage::Update,
+             (
+-                systems::input::handle_events,
+-                systems::interface::relayout,
+-                systems::poll::poll_ui,
+                 systems::gizmo::update_gizmo,
+                 systems::picking::request_pick,
+                 systems::picking::apply_pick,
+                 systems::actions::apply_actions,
+-                systems::browsers::ensure_indices,
+-                systems::browsers::watch_library,
+-                systems::browsers::poll_browsers,
+-                systems::load::poll_load,
+-                systems::load::place_the_model,
+             ),
+         );
++        if self.remote_catalogs {
++            app.add_system(Stage::Update, systems::browsers::ensure_indices);
++        }
+         app.add_system(
+             Stage::Update,
+             (
++                systems::browsers::watch_library,
++                systems::browsers::announce_indices,
++                systems::load::poll_load,
++                systems::load::place_the_model,
+                 systems::load::flush_report,
+                 systems::camera::update_camera,
+                 systems::animation::mirror_animation,
+@@ -47,18 +68,176 @@ impl Plugin for ViewerPlugin {
+                 systems::markers::draw_markers,
+                 systems::textures::apply_texture_drop,
+                 systems::skeleton::update_skeleton,
+-                systems::previews::upload_previews,
+             ),
+         );
+-        app.add_system(Stage::Update, systems::library::draw_previews);
+         app.add_system(Stage::Update, systems::library::hold_preview_capture);
+-        app.add_system(Stage::Update, systems::lists::rebuild_lists);
+-        app.add_system(Stage::Update, systems::refresh::refresh_ui);
+-        app.add_system(Stage::Update, systems::nav_gizmo::draw_nav_gizmo);
+-        app.add_system(Stage::Update, systems::settings::save_settings);
++        if self.persist_settings {
++            app.add_system(Stage::Update, systems::settings::save_settings);
++        }
++        let schedule = app.stages.stage_mut(Stage::Update.name());
++        schedule.order(
++            std::any::type_name_of_val(&crate::core::advance_history),
++            std::any::type_name_of_val(&systems::gizmo::update_gizmo),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::gizmo::update_gizmo),
++            std::any::type_name_of_val(&systems::picking::request_pick),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::picking::request_pick),
++            std::any::type_name_of_val(&systems::picking::apply_pick),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::picking::apply_pick),
++            std::any::type_name_of_val(&systems::actions::apply_actions),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::actions::apply_actions),
++            std::any::type_name_of_val(&systems::browsers::watch_library),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::browsers::watch_library),
++            std::any::type_name_of_val(&systems::browsers::announce_indices),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::browsers::announce_indices),
++            std::any::type_name_of_val(&systems::load::poll_load),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::load::poll_load),
++            std::any::type_name_of_val(&systems::load::place_the_model),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::load::place_the_model),
++            std::any::type_name_of_val(&systems::load::flush_report),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::load::flush_report),
++            std::any::type_name_of_val(&systems::camera::update_camera),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::camera::update_camera),
++            std::any::type_name_of_val(&systems::animation::mirror_animation),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::animation::mirror_animation),
++            std::any::type_name_of_val(&systems::selection::refresh_selection),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::selection::refresh_selection),
++            std::any::type_name_of_val(&systems::selection::sync_outline),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::selection::sync_outline),
++            std::any::type_name_of_val(&systems::picking::draw_hover),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::picking::draw_hover),
++            std::any::type_name_of_val(&systems::markers::draw_markers),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::markers::draw_markers),
++            std::any::type_name_of_val(&systems::textures::apply_texture_drop),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::textures::apply_texture_drop),
++            std::any::type_name_of_val(&systems::skeleton::update_skeleton),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::skeleton::update_skeleton),
++            std::any::type_name_of_val(&systems::library::hold_preview_capture),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::library::hold_preview_capture),
++            std::any::type_name_of_val(&systems::settings::save_settings),
++        );
+     }
+ }
+ 
++/// Retained-mode native frontend; attach after ViewerCorePlugin and UiPlugin.
++pub struct NativeViewerUiPlugin;
++impl Plugin for NativeViewerUiPlugin {
++    fn build(&self, app: &mut App) {
++        app.add_system(Stage::Startup, native_preview_visibility);
++        app.add_system(Stage::Startup, systems::interface::build_ui);
++        app.add_system(
++            Stage::Update,
++            (
++                systems::input::handle_events,
++                systems::interface::relayout,
++                systems::poll::poll_ui,
++                native_pointer_capture,
++                systems::browsers::poll_browsers,
++                systems::previews::upload_previews,
++                systems::library::draw_previews,
++                systems::lists::rebuild_lists,
++                systems::refresh::refresh_ui,
++                systems::nav_gizmo::draw_nav_gizmo,
++            ),
++        );
++        let schedule = app.stages.stage_mut(Stage::Update.name());
++        macro_rules! order {
++            ($a:path,$b:path) => {
++                schedule.order(
++                    std::any::type_name_of_val(&$a),
++                    std::any::type_name_of_val(&$b),
++                );
++            };
++        }
++        order!(systems::input::handle_events, systems::interface::relayout);
++        order!(systems::interface::relayout, systems::poll::poll_ui);
++        order!(systems::poll::poll_ui, native_pointer_capture);
++        order!(native_pointer_capture, systems::gizmo::update_gizmo);
++        order!(
++            systems::browsers::announce_indices,
++            systems::browsers::poll_browsers
++        );
++        order!(systems::browsers::poll_browsers, systems::load::poll_load);
++        order!(
++            systems::skeleton::update_skeleton,
++            systems::previews::upload_previews
++        );
++        order!(
++            systems::previews::upload_previews,
++            systems::library::draw_previews
++        );
++        order!(
++            systems::library::draw_previews,
++            systems::library::hold_preview_capture
++        );
++        order!(
++            systems::library::hold_preview_capture,
++            systems::lists::rebuild_lists
++        );
++        order!(systems::lists::rebuild_lists, systems::refresh::refresh_ui);
++        order!(
++            systems::refresh::refresh_ui,
++            systems::nav_gizmo::draw_nav_gizmo
++        );
++        order!(
++            systems::nav_gizmo::draw_nav_gizmo,
++            systems::settings::save_settings
++        );
++    }
++}
++fn native_preview_visibility(
++    arguments: Res<ViewerArguments>,
++    mut runtime: ResMut<nightshade_ui::resources::RetainedUiRuntime>,
++) {
++    if arguments.preview {
++        runtime.visible = false;
++    }
++}
++fn native_pointer_capture(
++    runtime: Res<nightshade_ui::resources::RetainedUiRuntime>,
++    interaction: Res<nightshade_ui::resources::RetainedUiInteraction>,
++    mut input: ResMut<crate::core::FrontendInput>,
++    storage: &mut nightshade::ecs::Storage,
++) {
++    input.pointer_over_ui =
++        nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage).is_some();
++}
++
+ #[cfg(not(target_arch = "wasm32"))]
+ fn compose_agent(app: &mut App) {
+     use crate::commands::agent::start_agent;
+diff --git a/apps/viewer/src/resources.rs b/apps/viewer/src/resources.rs
+index 4068f0f..413be51 100644
+--- a/apps/viewer/src/resources.rs
++++ b/apps/viewer/src/resources.rs
+@@ -89,6 +89,7 @@ impl Default for Sun {
+     }
+ }
+ 
++#[derive(Clone)]
+ pub struct Selection {
+     pub selected: Option<Entity>,
+     pub others: Vec<Entity>,
+@@ -609,6 +610,7 @@ pub struct LayerView {
+     pub weight: f32,
+ }
+ 
++#[derive(Clone)]
+ pub struct AnimationView {
+     pub clip: Option<usize>,
+     pub playing: bool,
+@@ -637,7 +639,7 @@ impl Default for AnimationView {
+     }
+ }
+ 
+-#[derive(clap::Args, Default)]
++#[derive(clap::Args, Default, Clone)]
+ pub struct ViewerArguments {
+     #[arg(
+         long,
+@@ -1038,7 +1040,6 @@ nightshade::ecs::resource_bundle! {
+             hierarchy: nightshade::ecs::HierarchyIndex,
+             entities: nightshade_scene::resources::entity_registry::EntityRegistry,
+             loading: nightshade_gltf::Loading,
+-            runtime: nightshade_ui::resources::RetainedUiRuntime,
+         }
+         read {
+             arguments: ViewerArguments,
+@@ -1059,3 +1060,4 @@ impl Stage<'_> {
+         }
+     }
+ }
++
+diff --git a/apps/viewer/src/systems/browsers.rs b/apps/viewer/src/systems/browsers.rs
+index 031ad9e..d867b5f 100644
+--- a/apps/viewer/src/systems/browsers.rs
++++ b/apps/viewer/src/systems/browsers.rs
+@@ -48,21 +48,7 @@ pub fn watch_library(mut viewer: ResMut<ViewerResources>) {
+ pub fn poll_browsers(mut viewer: ResMut<ViewerResources>, mut build: UiBuild<'_>) {
+     let viewer = &mut *viewer;
+ 
+-    for (index, ready) in [
+-        index_ready(&viewer.browsers.khronos),
+-        index_ready(&viewer.browsers.models),
+-        index_ready(&viewer.browsers.skies),
+-    ]
+-    .into_iter()
+-    .enumerate()
+-    {
+-        if ready && !viewer.browsers.announced[index] {
+-            viewer.browsers.announced[index] = true;
+-            if viewer.view.browser.map(browser_tab_index) == Some(index) {
+-                viewer.view.browser_dirty = true;
+-            }
+-        }
+-    }
++    announce(viewer);
+ 
+     if std::mem::take(&mut viewer.browsers.reset_thumbnails) {
+         let context = build.context();
+@@ -125,3 +111,24 @@ pub fn poll_browsers(mut viewer: ResMut<ViewerResources>, mut build: UiBuild<'_>
+         viewer.view.browser_dirty = true;
+     }
+ }
++
++pub fn announce_indices(mut viewer: ResMut<ViewerResources>) {
++    announce(&mut viewer);
++}
++fn announce(viewer: &mut ViewerResources) {
++    for (index, ready) in [
++        index_ready(&viewer.browsers.khronos),
++        index_ready(&viewer.browsers.models),
++        index_ready(&viewer.browsers.skies),
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        if ready && !viewer.browsers.announced[index] {
++            viewer.browsers.announced[index] = true;
++            if viewer.view.browser.map(browser_tab_index) == Some(index) {
++                viewer.view.browser_dirty = true;
++            }
++        }
++    }
++}
+diff --git a/apps/viewer/src/systems/gizmo.rs b/apps/viewer/src/systems/gizmo.rs
+index eaad5e2..45f98aa 100644
+--- a/apps/viewer/src/systems/gizmo.rs
++++ b/apps/viewer/src/systems/gizmo.rs
+@@ -6,7 +6,7 @@ use nightshade_platform::prelude::Input;
+ use nightshade_platform::winit::keyboard::KeyCode;
+ use nightshade_render::resources::viewport::Viewport;
+ use nightshade_scene::contract::GlobalTransform;
+-use nightshade_ui::resources::{RetainedUiInteraction, RetainedUiRuntime};
++
+ 
+ use crate::commands::gizmo::{
+     claim, continue_drag, draw_handles, end_drag, hide_handles, start_drag,
+@@ -23,8 +23,7 @@ pub fn update_gizmo(
+     window: Res<Window>,
+     viewport: Res<Viewport>,
+     active_camera: Res<ActiveCamera>,
+-    runtime: Res<RetainedUiRuntime>,
+-    interaction: Res<RetainedUiInteraction>,
++    frontend: Res<crate::core::FrontendInput>,
+     mut capture: ResMut<nightshade_platform::contract::input_capture::InputCapture>,
+     mut commands: Commands,
+     storage: &mut nightshade::ecs::Storage,
+@@ -73,7 +72,7 @@ pub fn update_gizmo(
+         || input.keyboard.is_key_pressed(KeyCode::ControlRight);
+ 
+     let over_interface =
+-        nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage).is_some();
++        frontend.pointer_over_ui;
+ 
+     if viewer.gizmo.drag.is_some() {
+         if input.mouse.state.contains(MouseState::LEFT_JUST_RELEASED) {
+diff --git a/apps/viewer/src/systems/input.rs b/apps/viewer/src/systems/input.rs
+index e133d45..c18dfdc 100644
+--- a/apps/viewer/src/systems/input.rs
++++ b/apps/viewer/src/systems/input.rs
+@@ -23,7 +23,6 @@ pub fn handle_events(
+     storage: &mut nightshade::ecs::Storage,
+ ) {
+     let viewer = &mut *viewer;
+-    viewer.history.frame += 1;
+     let under_pointer = nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage);
+     let texture_row = under_pointer.and_then(|target| {
+         viewer
+diff --git a/apps/viewer/src/systems/picking.rs b/apps/viewer/src/systems/picking.rs
+index 80816ad..2245668 100644
+--- a/apps/viewer/src/systems/picking.rs
++++ b/apps/viewer/src/systems/picking.rs
+@@ -7,7 +7,7 @@ use nightshade_render::components::lines::{Line, Lines};
+ use nightshade_render::prelude::*;
+ use nightshade_scene::contract::GlobalTransform;
+ use nightshade_scene::contract::primitives::{Name, Visibility};
+-use nightshade_ui::resources::{RetainedUiInteraction, RetainedUiRuntime};
++
+ 
+ use crate::commands::picking::{cycle_select, reset_cycle};
+ use crate::data::{PICK_PATIENCE, PickKind, ViewerAction};
+@@ -26,13 +26,11 @@ pub fn request_pick(
+     window: Res<nightshade_platform::contract::window::Window>,
+     viewport: Res<Viewport>,
+     settings: Res<RenderSettings>,
+-    runtime: Res<RetainedUiRuntime>,
+-    interaction: Res<RetainedUiInteraction>,
+-    storage: &mut nightshade::ecs::Storage,
++    frontend: Res<crate::core::FrontendInput>,
++    _storage: &mut nightshade::ecs::Storage,
+ ) {
+     let viewer = &mut *viewer;
+-    let over_interface = nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage)
+-        .is_some()
++    let over_interface = frontend.pointer_over_ui
+         || viewer.gizmo.hovered.is_some()
+         || viewer.gizmo.drag.is_some();
+     let position = input.mouse.position;
+diff --git a/apps/viewer/src/systems/settings.rs b/apps/viewer/src/systems/settings.rs
+index a8764b2..4baa78d 100644
+--- a/apps/viewer/src/systems/settings.rs
++++ b/apps/viewer/src/systems/settings.rs
+@@ -22,9 +22,6 @@ pub fn load_settings(mut stage_state: crate::resources::Stage) {
+         read_settings().unwrap_or_default()
+     };
+     apply_settings(stage, &settings);
+-    if preview {
+-        stage.runtime.visible = false;
+-    }
+     let viewer = &mut *stage.viewer;
+     viewer.settings = settings;
+     viewer.settings_delay = 0;
+diff --git a/crates/plugins/draw/nightshade-app/Cargo.toml b/crates/plugins/draw/nightshade-app/Cargo.toml
+index 61b5734..59985ce 100644
+--- a/crates/plugins/draw/nightshade-app/Cargo.toml
++++ b/crates/plugins/draw/nightshade-app/Cargo.toml
+@@ -7,6 +7,7 @@ license.workspace = true
+ publish = false
+ 
+ [dependencies]
++nightshade-camera.workspace = true
+ nightshade = { workspace = true }
+ nightshade-cli = { workspace = true }
+ nightshade-log = { workspace = true }
+diff --git a/crates/plugins/draw/nightshade-app/src/commands.rs b/crates/plugins/draw/nightshade-app/src/commands.rs
+index 66fa786..57ef676 100644
+--- a/crates/plugins/draw/nightshade-app/src/commands.rs
++++ b/crates/plugins/draw/nightshade-app/src/commands.rs
+@@ -50,6 +50,35 @@ where
+             }),
+     );
+ 
++    finish(app, opening)
++}
++
++/// Compose the same native renderer/plugin stack without parsing process arguments or starting an event loop.
++pub fn compose_embedded<A: Send + Sync + 'static>(opening: Opening, arguments: A) -> App {
++    let mut app = App::new();
++    app.add_plugin(nightshade_window::WindowPlugin {
++        title: opening.title.to_string(),
++        size: opening.size,
++    });
++    app.add_plugin(nightshade_log::LogPlugin {
++        title: Some(opening.title.to_string()),
++        ..Default::default()
++    });
++    #[cfg(feature = "wgpu")]
++    app.add_plugin(nightshade_wgpu::RenderPlugin {
++        vsync: opening.vsync,
++        frame_rate_limit: opening.frame_rate_limit,
++    });
++    #[cfg(feature = "vulkan")]
++    app.add_plugin(nightshade_vulkan::RenderPlugin {
++        vsync: opening.vsync,
++        frame_rate_limit: opening.frame_rate_limit,
++    });
++    app.add_plugin(nightshade_camera::CameraPlugin);
++    app.insert_resource(arguments);
++    finish(app, opening)
++}
++fn finish(mut app: App, opening: Opening) -> App {
+     #[cfg(feature = "wgpu")]
+     app.add_plugin(nightshade_wgpu_shading::ShadingPlugin);
+     #[cfg(feature = "wgpu")]
+diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
+new file mode 100644
+--- /dev/null
++++ b/apps/viewer/src/core.rs
+@@ -0,0 +1,176 @@
++//! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
++pub use crate::data::*;
++pub use crate::plugin::ViewerCorePlugin;
++pub use crate::resources::{
++    AnimationView, ClipInfo, MaterialView, ModelStats, SceneRow, Selection, ViewerArguments,
++};
++use nightshade::prelude::*;
++
++#[derive(Default)]
++pub struct FrontendInput {
++    pub pointer_over_ui: bool,
++}
++
++/// An owned snapshot; no ECS guards, UI entities or mutable resource references escape.
++#[derive(Clone)]
++pub struct ViewerSnapshot {
++    pub nodes: Vec<SceneRow>,
++    pub selection: Selection,
++    pub animation: AnimationView,
++    pub clips: Vec<ClipInfo>,
++    pub stats: Option<ModelStats>,
++    pub loading: bool,
++    pub grid: bool,
++    pub notice: Option<String>,
++    pub settings: nightshade_render::data::config::RenderSettings,
++    pub can_undo: bool,
++    pub can_redo: bool,
++}
++pub const ACTION_QUEUE_CAPACITY: usize = 4096;
++pub fn submit(world: &mut World, action: ViewerAction) -> Result<(), ViewerAction> {
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    if viewer.actions.len() >= ACTION_QUEUE_CAPACITY {
++        return Err(action);
++    }
++    viewer.actions.push(action);
++    Ok(())
++}
++pub fn snapshot(world: &World) -> ViewerSnapshot {
++    let viewer = world.res::<crate::resources::ViewerResources>();
++    ViewerSnapshot {
++        nodes: viewer.model.rows.clone(),
++        selection: viewer.selection.clone(),
++        animation: viewer.animation.clone(),
++        clips: viewer.model.clips.clone(),
++        stats: viewer.model.stats.clone(),
++        loading: viewer.model.pending.is_some(),
++        grid: viewer.view.grid,
++        notice: viewer
++            .incoming
++            .notice
++            .lock()
++            .ok()
++            .and_then(|notice| notice.clone()),
++        settings: world
++            .res::<nightshade_render::data::config::RenderSettings>()
++            .clone(),
++        can_undo: !viewer.history.done.is_empty(),
++        can_redo: !viewer.history.undone.is_empty(),
++    }
++}
++/// Compose the original scene/plugin stack with caller-owned arguments and no native UI or event loop.
++pub fn compose(arguments: ViewerArguments, plugin: ViewerCorePlugin) -> App {
++    let mut app = nightshade_app::commands::compose_embedded(
++        nightshade_app::Opening::titled("Viewer"),
++        arguments,
++    );
++    app.add_plugin(nightshade_text::TextPlugin)
++        .add_plugin(nightshade_animation::AnimationPlugin)
++        .add_plugin(nightshade_camera_controller::CameraControllerPlugin)
++        .add_plugin(nightshade_gltf::GltfPlugin)
++        .add_plugin(plugin);
++    app
++}
++
++pub(crate) fn advance_history(mut viewer: ResMut<crate::resources::ViewerResources>) {
++    viewer.history.frame += 1;
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn original_native_frontend_still_composes_and_starts() {
++        let mut app = nightshade_app::commands::compose_embedded(
++            nightshade_app::Opening::titled("Viewer test"),
++            ViewerArguments {
++                preview: true,
++                no_agent: true,
++                ..Default::default()
++            },
++        );
++        app.add_plugin(nightshade_text::TextPlugin)
++            .add_plugin(nightshade_animation::AnimationPlugin)
++            .add_plugin(nightshade_camera_controller::CameraControllerPlugin)
++            .add_plugin(nightshade_gltf::GltfPlugin)
++            .add_plugin(nightshade_ui::UiPlugin::new())
++            .add_plugin(crate::ViewerPlugin);
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        assert!(
++            app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
++        assert!(
++            !app.world
++                .res::<nightshade_ui::resources::RetainedUiRuntime>()
++                .visible
++        );
++        assert!(
++            app.world
++                .res::<nightshade_platform::contract::window::Window>()
++                .handle
++                .is_none()
++        );
++    }
++    #[test]
++    fn actions_and_snapshots_work_without_retained_ui() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        assert!(
++            !app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
++        app.startup.run(&mut app.world);
++        submit(
++            &mut app.world,
++            ViewerAction::AddPrimitive(PrimitiveKind::Cube),
++        )
++        .unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let initial = snapshot(&app.world);
++        let entity = initial.nodes[0].entity;
++        submit(&mut app.world, ViewerAction::Select(Some(entity))).unwrap();
++        submit(&mut app.world, ViewerAction::Rename("Core cube".into())).unwrap();
++        submit(&mut app.world, ViewerAction::SetTranslation([1., 2., 3.])).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let edited = snapshot(&app.world);
++        assert_eq!(edited.selection.name, "Core cube");
++        assert_eq!(edited.selection.translation, [1., 2., 3.]);
++        assert!(edited.can_undo);
++        submit(&mut app.world, ViewerAction::Undo).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(snapshot(&app.world).selection.translation, [0., 0., 0.]);
++        assert_eq!(
++            edited.selection.translation,
++            [1., 2., 3.],
++            "snapshots must own their state"
++        );
++    }
++}
++
++pub fn request_pick(world: &mut World, x: u32, y: u32) {
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    viewer.picking.click_wanted = Some(nightshade::prelude::nalgebra_glm::vec2(x as f32, y as f32));
++    viewer.picking.click_adds = false;
++}
++pub fn pick_pending(world: &World) -> bool {
++    let viewer = world.res::<crate::resources::ViewerResources>();
++    viewer.picking.click_wanted.is_some() || viewer.picking.outstanding.is_some()
++}
