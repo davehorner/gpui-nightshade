@@ -3,6 +3,7 @@ mod commands;
 mod docking;
 mod file_drop;
 mod gpu_validation;
+mod material;
 mod rendering;
 use animation::{WeightEditor, WeightTarget};
 use gpui_kit::base::Disableable;
@@ -56,7 +57,7 @@ impl Editor {
             view.thumbnails.release(cx);
         })
         .detach();
-        let labels = [
+        let mut labels = vec![
             "Name",
             "x, y, z",
             "x, y, z",
@@ -91,6 +92,7 @@ impl Editor {
             "Sun yaw degrees",
             "Sun pitch degrees",
         ];
+        labels.extend(material::CONTROLS.iter().map(|(_, label)| *label));
         let fields: Vec<_> = labels
             .iter()
             .map(|label| cx.new(|cx| InputState::new(window, cx).placeholder(*label)))
@@ -258,7 +260,7 @@ impl Editor {
             30 => scalar().filter(|v| *v >= 0.).map(Action::SetSunIntensity),
             31 => scalar().map(Action::SetSunYaw),
             32 => scalar().map(Action::SetSunPitch),
-            _ => None,
+            _ => material::field_action(index, &value, self.snapshot.as_deref()),
         };
         if let Some(action) = action {
             self.send(action, cx);
@@ -273,7 +275,7 @@ impl Editor {
         let light = selection.light.as_ref();
         let camera = selection.camera.as_ref();
         let material = &selection.material_values;
-        let values = [
+        let mut values = vec![
             selection.name.clone(),
             vector(selection.translation),
             vector(selection.rotation),
@@ -311,6 +313,11 @@ impl Editor {
             format!("{:.3}", snapshot.render.sun_yaw),
             format!("{:.3}", snapshot.render.sun_pitch),
         ];
+        values.extend(
+            material::CONTROLS
+                .iter()
+                .map(|(control, _)| format!("{:.3}", control.row(material).3)),
+        );
         for (field, value) in self.fields.iter().zip(values) {
             if !field.focus_handle(cx).is_focused(window)
                 && field.read(cx).value().as_ref() != value
@@ -653,6 +660,7 @@ impl Editor {
                             .child(label)
                             .child(Input::new(&self.fields[index]));
                     }
+                    inspector = inspector.child(self.advanced_material_panel(snapshot, cx));
                     inspector = inspector.child(self.action_button(
                         "reset-material",
                         "Reset material",
@@ -811,7 +819,7 @@ impl Render for Editor {
                     self.inspector_scroll.set_offset(point(px(0.), px(0.)));
                 }
                 if self.fields.iter().enumerate().any(|(i, field)| {
-                    matches!(i,0..=5|8..=20) && field.focus_handle(cx).is_focused(window)
+                    matches!(i,0..=5|8..=20|33..=43) && field.focus_handle(cx).is_focused(window)
                 }) {
                     window.focus(&self.viewport.focus_handle(cx), cx);
                 }

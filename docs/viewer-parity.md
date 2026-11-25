@@ -7,7 +7,7 @@ Reference: pinned Nightshade trunk `630c74c973f1f1e047123f2fb3090be5a26ba6b9`, n
 | glTF/GLB load | Native open, asset cards and single-path drop; helmet/Fox/Avocado observed | Broader invalid-file/dialog/drop coverage |
 | Hierarchy and multi-selection | Hierarchy, Ctrl-click, rename/visibility and inspector | Larger scenes and multi-selection editing checks |
 | Transforms, picking and gizmos | Move/scale, background GPU pick, undo and cancellation checked | Broader rotation/snapping, mixed DPI and outside-window capture |
-| Materials and textures | Common PBR fields and eight texture replacement/removal slots | Alpha mode/cutoff, normal/occlusion strength, specular/thickness/dispersion, clearcoat/sheen/iridescence fields; live texture-dialog coverage |
+| Materials and textures | Trunk's scalar controls, all four alpha modes, colors/flags and eight texture replacement/removal slots; dispatcher round-trip/history/reset regression | Live advanced-material appearance and texture-dialog coverage; further glTF fields beyond trunk's editable contract |
 | Animation playback/blend/layers | Existing controls, model clips/layer/morph observations | Editable timeline and broader multi-layer workflows |
 | Morph targets | Indexed ECS weights and AnimatedMorphCube observed | Larger/animated model coverage |
 | Skeleton/retargeting | Skeleton toggle/count observed; held-clip action exposed | Cross-model retargeting verification |
@@ -34,7 +34,7 @@ Live shared-GPU validation opened the palette using Ctrl+Shift+P, filtered Add s
 
 ## Next parity increments
 
-1. Finish missing material fields using trunk's existing MaterialField actions and snapshots.
+1. Validate advanced material appearance and texture-dialog workflows across representative assets; trunk's existing material controls are now exposed.
 2. Add timeline scrubbing/clip-time display without introducing a competing animation state.
 3. Complete local library previews and conversion setup/progress/error flows.
 4. Split diagnostics and specialized editing panels where that improves the docked workflow.
