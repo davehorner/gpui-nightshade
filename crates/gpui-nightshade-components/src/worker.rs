@@ -104,7 +104,7 @@ impl Worker {
     }
     pub fn paint_failed(&self, error: String) {
         let mut state = self.shared.0.lock().unwrap();
-        if state.status.requested == BackendPreference::Auto
+        if state.status.requested == BackendPreference::WindowsSharedAuto
             && state.status.active == Some(PresentationBackend::WindowsShared)
             && !state.fallback
         {
@@ -294,33 +294,29 @@ fn run(
     if choice == BackendPreference::WindowsShared && !cfg!(target_os = "windows") {
         return Err("windows-shared is unavailable on this platform".into());
     }
-    let mut gpu = cfg!(target_os = "windows") && choice != BackendPreference::Readback;
+    let mut gpu = cfg!(target_os = "windows")
+        && matches!(
+            choice,
+            BackendPreference::WindowsShared | BackendPreference::WindowsSharedAuto
+        );
     let mut host = if gpu {
         match (factory)(wgpu::Backends::DX12, 640, 480) {
             Ok(host) => host,
-            Err(error) if choice == BackendPreference::Auto => {
+            Err(error) if choice == BackendPreference::WindowsSharedAuto => {
                 eprintln!("DX12 initialization unavailable: {error}; selecting readback");
                 shared.0.lock().unwrap().status.fallback_reason = Some(error.to_string());
                 gpu = false;
-                (factory)(
-                    wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
-                    640,
-                    480,
-                )?
+                (factory)(gpui_nightshade::default_backends(), 640, 480)?
             }
             Err(error) => return Err(error),
         }
     } else {
-        (factory)(
-            wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
-            640,
-            480,
-        )?
+        (factory)(gpui_nightshade::default_backends(), 640, 480)?
     };
     let mut generation = 0;
     let mut transport = match Transport::new(host.as_ref(), 640, 480, 0, gpu) {
         Ok(transport) => transport,
-        Err(error) if choice == BackendPreference::Auto => {
+        Err(error) if choice == BackendPreference::WindowsSharedAuto => {
             eprintln!("shared allocation unavailable: {error}; selecting readback");
             shared.0.lock().unwrap().status.fallback_reason = Some(error.to_string());
             gpu = false;
@@ -796,9 +792,33 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     #[ignore = "requires a working native GPU adapter"]
-    fn auto_fallback_exposes_actual_backend_and_reason() {
+    fn auto_uses_vulkan_readback_without_attempting_dx12() {
         let mut worker = Worker::new(
             BackendPreference::Auto,
+            Arc::new(|backends, w, h| {
+                if backends != wgpu::Backends::VULKAN {
+                    return Err("default auto renderer must be Vulkan".into());
+                }
+                Ok(Box::new(ContinuousHost(pollster::block_on(
+                    SceneHost::cube_with_backends(w, h, backends),
+                )?)))
+            }),
+        );
+        wait_for(&worker, |s| s.image.is_some());
+        let status = worker.presentation_status();
+        assert_eq!(status.active, Some(PresentationBackend::Readback));
+        assert_eq!(status.graphics_backend, Some(wgpu::Backend::Vulkan));
+        assert!(status.error.is_none());
+        assert!(status.fallback_reason.is_none());
+        assert!(worker.take().0.unwrap().image.as_bytes(0).is_some());
+        worker.shutdown().unwrap().join().unwrap();
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires a working native GPU adapter"]
+    fn shared_auto_fallback_exposes_actual_backend_and_reason() {
+        let mut worker = Worker::new(
+            BackendPreference::WindowsSharedAuto,
             Arc::new(|backends, w, h| {
                 if backends == wgpu::Backends::DX12 {
                     return Err("DX12 deliberately unavailable".into());
@@ -828,7 +848,7 @@ mod tests {
     #[ignore = "requires D3D12 sharing on a native Windows GPU"]
     fn importer_failure_replaces_gpu_mailbox_with_real_readback() {
         let mut worker = Worker::new(
-            BackendPreference::Auto,
+            BackendPreference::WindowsSharedAuto,
             Arc::new(|backends, w, h| {
                 Ok(Box::new(ContinuousHost(pollster::block_on(
                     SceneHost::cube_with_backends(w, h, backends),

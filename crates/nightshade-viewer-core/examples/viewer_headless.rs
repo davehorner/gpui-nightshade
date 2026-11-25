@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("dx12") => wgpu::Backends::DX12,
         Ok("vulkan") => wgpu::Backends::VULKAN,
         Ok(_) => return Err("VIEWER_TEST_BACKEND must be dx12 or vulkan".into()),
-        Err(_) => wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
+        Err(_) => gpui_nightshade::default_backends(),
     };
     let connection = ViewerConnection::default();
     let mut runtime = pollster::block_on(ViewerRuntime::with_options(

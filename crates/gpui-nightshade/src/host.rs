@@ -20,13 +20,7 @@ pub struct SceneHost {
 }
 impl SceneHost {
     pub async fn cube(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::cube_with_backends(
-            width,
-            height,
-            nightshade_wgpu::wgpu::InstanceDescriptor::new_without_display_handle_from_env()
-                .backends,
-        )
-        .await
+        Self::cube_with_backends(width, height, crate::default_backends()).await
     }
     pub async fn cube_with_backends(
         width: u32,

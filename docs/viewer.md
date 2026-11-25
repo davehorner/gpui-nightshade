@@ -1,6 +1,6 @@
 # GPUI viewer controls
 
-Run `just viewer` for the bundled model or `just gltf C:/models/scene.glb`. The full editor currently defaults to asynchronous readback. `--presentation=windows-shared` passes repeated full-scene and lifecycle checks on the tested RTX 4080 after fixing imported-resource retirement; broader hardware coverage remains unverified.
+Run `just viewer` for the bundled model or `just gltf C:/models/scene.glb`. The full editor and demos default to Vulkan with asynchronous readback. `--presentation=windows-shared` passes repeated full-scene and lifecycle checks on the tested RTX 4080 after fixing imported-resource retirement; broader hardware coverage remains unverified.
 
 Open **Commands** or press **Ctrl+Shift+P** (Cmd+Shift+P on macOS) for the searchable command palette. Type to filter, use Up/Down and Enter to choose, and Escape to clear the query or dismiss. It dispatches the same trunk actions as the toolbar and MCP-controlled scene: browsing/catalog/library commands, all six primitives and three light types, framing/editor camera, selection tools, gizmo modes/snapping/grid, playback/skeleton, screenshot/export and undo/redo. Save/reset layout are frontend commands. Unavailable commands are disabled, and confirmation rechecks the latest snapshot rather than relying on state captured when the palette opened.
 

@@ -4,7 +4,7 @@ Test machine: Windows, NVIDIA GeForce RTX 4080, pinned Rust 1.100.0 and debug bu
 
 ## Current result: imported-resource retirement
 
-The visible full viewer now passes fresh forced-shared runs on this RTX 4080 after retaining evicted D3D11 imports until their consumer fence completes. The editor still defaults to readback; broader adapters, visual automation and device recreation remain unverified. The investigation history and temporary sampling probes are preserved in commit `7e21fed`; those probes have been removed from the active code.
+The visible full viewer now passes fresh forced-shared runs on this RTX 4080 after retaining evicted D3D11 imports until their consumer fence completes. The editor and demos now default to Vulkan/readback; broader adapters, visual automation and device recreation remain unverified. The investigation history and temporary sampling probes are preserved in commit `7e21fed`; those probes have been removed from the active code.
 
 The atlas previously dropped its imported D3D11 texture, shader view and synchronization owner as soon as the image key was evicted. The producer checked consumer fences before reuse, but that did not explicitly retain the consumer-side import objects. Removed external entries now leave the drawable atlas immediately and enter a retirement queue. Their native objects and producer frame leases stay alive until consumer completion; the device-removal sentinel cannot release them. Collection runs before each GPUI render/import and from the viewport polling task even when no draw is scheduled. Retained leases apply backpressure through the existing three-slot producer ring and bounded retired generations. There is no CPU wait on the UI thread and no additional pixel copy.
 

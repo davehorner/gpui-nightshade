@@ -3,23 +3,14 @@ mod editor;
 mod thumbnails;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let demo = args
-        .iter()
-        .any(|arg| arg == "--cube" || arg == "--multi-viewport");
     let backend = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--presentation="))
         .map(str::to_string)
         .or_else(|| std::env::var("GPUI_NIGHTSHADE_PRESENTATION").ok())
-        .unwrap_or_else(|| {
-            if demo {
-                "auto".into()
-            } else {
-                "readback".into()
-            }
-        })
+        .unwrap_or_else(|| "auto".into())
         .parse()
-        .expect("use --presentation=auto|readback|windows-shared");
+        .expect("use --presentation=auto|readback|windows-shared|windows-shared-auto");
     if args
         .iter()
         .any(|arg| arg == "--cube" || arg == "--multi-viewport")

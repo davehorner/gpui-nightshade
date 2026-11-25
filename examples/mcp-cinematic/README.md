@@ -17,10 +17,10 @@ Remote candidates are fetched and validated first. A remote pool falls back to v
 From the repository root, start a viewer:
 
 ```powershell
-cargo run -p gpui-nightshade-viewer -- --agent-port=8791 --presentation=windows-shared
+cargo run -p gpui-nightshade-viewer -- --agent-port=8791
 ```
 
-Use `--presentation=readback` for the portable path. Keep the viewport visible. In a second terminal:
+The default is Vulkan with readback. `--presentation=windows-shared` explicitly opts into DX12 GPU sharing. Keep the viewport visible. In a second terminal:
 
 ```powershell
 python examples/mcp-cinematic/cinematic.py --seed 7

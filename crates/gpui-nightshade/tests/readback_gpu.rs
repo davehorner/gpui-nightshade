@@ -5,8 +5,9 @@ use gpui_nightshade::{
 #[test]
 #[ignore = "requires a working native GPU adapter"]
 fn asynchronous_ring_alignment_channels_backpressure_and_latest_frame() {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    descriptor.backends = gpui_nightshade::default_backends();
+    let instance = wgpu::Instance::new(descriptor);
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let texture = device.create_texture(&wgpu::TextureDescriptor {

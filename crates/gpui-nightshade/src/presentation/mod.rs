@@ -107,10 +107,13 @@ impl PresentationStatus {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BackendPreference {
+    /// Use the default Vulkan renderer with readback presentation.
     #[default]
     Auto,
     Readback,
     WindowsShared,
+    /// Opt in to DX12 sharing with automatic readback fallback.
+    WindowsSharedAuto,
 }
 impl std::str::FromStr for BackendPreference {
     type Err = String;
@@ -119,6 +122,7 @@ impl std::str::FromStr for BackendPreference {
             "auto" => Ok(Self::Auto),
             "readback" => Ok(Self::Readback),
             "windows-shared" => Ok(Self::WindowsShared),
+            "windows-shared-auto" => Ok(Self::WindowsSharedAuto),
             _ => Err(format!("unknown presentation backend: {value}")),
         }
     }
