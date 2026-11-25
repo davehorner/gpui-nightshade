@@ -35,4 +35,4 @@ Calls have a 20-second deadline and the pending queue is bounded to 256 entries.
 
 ## Cinematic example
 
-[The dependency-free Python example](../examples/mcp-cinematic/README.md) creates a seeded cast of faceted crystals, evaluates staggered tweens, and drives a cinematic camera through `set_transforms`. It replaces the connected scene and leaves the final pose open. Animation is evaluated by the client; no animation clips or competing scene protocol are introduced.
+[The dependency-free Python example](../examples/mcp-cinematic/README.md) creates a seeded cast of faceted crystals with two real morph targets and a native glTF clip containing object tweens and cinematic camera tracks. MCP starts/configures playback, reads clip time, and drives and verifies vertex morph weights. It replaces the connected scene and leaves the final pose open. Nightshade evaluates the object/camera animation clip; the client evaluates only the independent morph envelopes.

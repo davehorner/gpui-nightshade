@@ -10,7 +10,7 @@ Changes are isolated to nightshade-wgpu: optional-surface initialization retaini
 
 `0004-mcp-alignment.patch` aligns the existing native MCP tools with inspector transform/material/light history, preserves selection for targeted edits, reports tool failures accurately, validates arguments and bounds, expires unstarted calls, and adds animation/morph controls. Protocol, schema, queue and native HTTP regressions cover errors and frontend-world undo/redo. See [MCP contract](mcp.md). The existing legacy HTTP endpoint and protocol version are preserved.
 
-`0005-mcp-transform-batches.patch` adds bounded, prevalidated transform batches through the shared inspector mutation helper. A batch records one grouped history edit and returns all post-edit transforms. HTTP regressions cover invalid/duplicate targets, numeric overflow, no partial writes and grouped undo/redo. The [cinematic example](../examples/mcp-cinematic/README.md) uses this tool to update its camera and cast in one scene stage.
+`0005-mcp-transform-batches.patch` adds bounded, prevalidated transform batches through the shared inspector mutation helper. A batch records one grouped history edit and returns all post-edit transforms. HTTP regressions cover invalid/duplicate targets, numeric overflow, no partial writes and grouped undo/redo. Procedural clients can use this tool for synchronized updates; the [cinematic example](../examples/mcp-cinematic/README.md) now uses native animation clips for its object/camera tracks and MCP morph controls.
 
 ## GPUI
 

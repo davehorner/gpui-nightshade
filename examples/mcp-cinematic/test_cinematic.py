@@ -1,3 +1,5 @@
+import base64
+import struct
 import json
 import math
 from pathlib import Path
@@ -25,6 +27,40 @@ class ChoreographyTests(unittest.TestCase):
             positions, normals = demo.geometry(shape)
             for i in range(0, len(positions), 3):
                 self.assertGreater(sum(positions[i + j] * normals[i + j] for j in range(3)), 0)
+
+    def test_generated_clip_targets_objects_and_camera_and_has_real_morph_deltas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "animated.gltf"
+            demo.write_scene(path, demo.choreography(7, 3), duration=2)
+            doc = json.loads(path.read_text())
+            blob = base64.b64decode(doc["buffers"][0]["uri"].split(",")[1])
+            def values(index):
+                accessor = doc["accessors"][index]
+                view = doc["bufferViews"][accessor["bufferView"]]
+                return struct.unpack_from("<" + "f" * (view["byteLength"] // 4), blob, view["byteOffset"])
+            clip = doc["animations"][0]
+            targets = {(c["target"]["node"], c["target"]["path"]) for c in clip["channels"]}
+            for node in range(3):
+                for field in ("translation", "rotation", "scale"):
+                    self.assertIn((node, field), targets)
+            self.assertIn((3, "translation"), targets)
+            self.assertIn((3, "rotation"), targets)
+            for sampler in clip["samplers"]:
+                times = values(sampler["input"])
+                self.assertEqual((times[0], times[-1]), (0, 2))
+                self.assertTrue(all(a < b for a, b in zip(times, times[1:])))
+                self.assertEqual(doc["accessors"][sampler["output"]]["count"], len(times))
+            for channel in clip["channels"]:
+                if channel["target"]["path"] == "rotation":
+                    data = values(clip["samplers"][channel["sampler"]]["output"])
+                    for i in range(0, len(data), 4):
+                        self.assertAlmostEqual(sum(v * v for v in data[i:i+4]), 1, places=5)
+            primitive = doc["meshes"][0]["primitives"][0]
+            self.assertEqual(doc["meshes"][0]["weights"], [0, 0])
+            for target in primitive["targets"]:
+                delta = values(target["POSITION"])
+                self.assertTrue(any(abs(v) > 0.1 for v in delta))
+                self.assertEqual(len(delta), len(values(primitive["attributes"]["POSITION"])))
 
     def test_seeded_scene_and_tweens_have_stable_endpoints(self):
         objects = demo.choreography(7, 6)

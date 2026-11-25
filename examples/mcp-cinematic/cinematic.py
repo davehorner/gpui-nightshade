@@ -113,7 +113,39 @@ def geometry(shape):
     return positions, normals
 
 
-def write_scene(path, objects, shape="diamond"):
+def quaternion(degrees):
+    x, y, z = [math.radians(v) / 2 for v in degrees]
+    cx, cy, cz = math.cos(x), math.cos(y), math.cos(z)
+    sx, sy, sz = math.sin(x), math.sin(y), math.sin(z)
+    return [sx * cy * cz - cx * sy * sz, cx * sy * cz + sx * cy * sz,
+            cx * cy * sz - sx * sy * cz, cx * cy * cz + sx * sy * sz]
+
+
+def morph_delta(positions, target):
+    delta = []
+    for i in range(0, len(positions), 3):
+        x, y, z = positions[i:i + 3]
+        if target == 0:
+            changed = [x * 1.8, y * 0.65, z * 1.8]
+        else:
+            angle = y * 0.8
+            changed = [x * math.cos(angle) - z * math.sin(angle), y * 1.3,
+                       x * math.sin(angle) + z * math.cos(angle)]
+        delta.extend(a - b for a, b in zip(changed, (x, y, z)))
+    return delta
+
+
+def wait_for_animation(client, predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        state = client.call("get_animation")
+        if predicate(state):
+            return state
+        time.sleep(0.05)
+    raise RuntimeError("Native animation did not reach the requested playback state")
+
+
+def write_scene(path, objects, shape="diamond", duration=24):
     """Self-contained glTF: shared faceted geometry and a free camera."""
     blob = bytearray()
     doc = {"asset": {"version": "2.0", "generator": "gpui-nightshade MCP cinematic"},
@@ -122,16 +154,17 @@ def write_scene(path, objects, shape="diamond"):
            "cameras": [{"name": "Cinematic camera", "type": "perspective",
                         "perspective": {"yfov": math.radians(44), "znear": 0.05, "zfar": 200}}]}
 
-    def attribute(values):
+    def attribute(values, kind="VEC3", vertex=True):
+        width = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}[kind]
         view = len(doc["bufferViews"])
         doc["bufferViews"].append({"buffer": 0, "byteOffset": len(blob),
-                                   "byteLength": len(values) * 4, "target": 34962})
+                                   "byteLength": len(values) * 4, **({"target": 34962} if vertex else {})})
         blob.extend(struct.pack("<" + "f" * len(values), *values))
         index = len(doc["accessors"])
         doc["accessors"].append({"bufferView": view, "componentType": 5126,
-                                 "count": len(values) // 3, "type": "VEC3",
-                                 "min": [min(values[i::3]) for i in range(3)],
-                                 "max": [max(values[i::3]) for i in range(3)]})
+                                 "count": len(values) // width, "type": kind,
+                                 "min": [min(values[i::width]) for i in range(width)],
+                                 "max": [max(values[i::width]) for i in range(width)]})
         return index
 
     # A shared mesh avoids the pinned renderer's distinct-mesh draw issue.
@@ -144,7 +177,10 @@ def write_scene(path, objects, shape="diamond"):
     doc["extensionsUsed"] = ["KHR_materials_unlit"]
     doc["meshes"].append({"name": "Cinematic shared crystal", "primitives": [{
         "attributes": {"POSITION": attribute(positions), "NORMAL": attribute(normals),
-                       "COLOR_0": attribute(colors)}, "material": 0}]})
+                       "COLOR_0": attribute(colors)}, "material": 0,
+        "targets": [{"POSITION": attribute(morph_delta(positions, 0))},
+                    {"POSITION": attribute(morph_delta(positions, 1))}]}],
+        "weights": [0, 0], "extras": {"targetNames": ["Expand", "Twist"]}})
     doc["materials"].append({"name": "Cinematic facets", "extensions": {"KHR_materials_unlit": {}},
         "pbrMetallicRoughness": {"baseColorFactor": [1, 1, 1, 1],
                                  "metallicFactor": 0, "roughnessFactor": 0.5}})
@@ -152,6 +188,25 @@ def write_scene(path, objects, shape="diamond"):
         doc["nodes"].append({"name": obj["name"], "mesh": 0, "translation": obj["home"],
                              "scale": [obj["size"] * v for v in obj["proportions"]]})
     doc["nodes"].append({"name": "Cinematic camera", "camera": 0, "translation": [11, 7, 15]})
+    # Bake the object tweens AND camera into a real glTF clip. Runtime playback
+    # interpolates these at scene frame rate, independently of MCP request latency.
+    samples = max(2, math.ceil(duration * 30) + 1)
+    times = [duration * i / (samples - 1) for i in range(samples)]
+    time_accessor = attribute(times, "SCALAR", False)
+    animation = {"name": "Cinematic choreography", "samplers": [], "channels": []}
+    for node in range(len(objects) + 1):
+        poses = [camera_pose(t / duration) if node == len(objects)
+                 else object_pose(objects[node], node, len(objects), t / duration) for t in times]
+        for field, kind in [("translation", "VEC3"), ("rotation", "VEC4"), ("scale", "VEC3")]:
+            if field not in poses[0]:
+                continue
+            values = [v for pose in poses for v in
+                      (quaternion(pose[field]) if field == "rotation" else pose[field])]
+            sampler = len(animation["samplers"])
+            animation["samplers"].append({"input": time_accessor,
+                "output": attribute(values, kind, False), "interpolation": "LINEAR"})
+            animation["channels"].append({"sampler": sampler, "target": {"node": node, "path": field}})
+    doc["animations"] = [animation]
     doc["buffers"] = [{"byteLength": len(blob), "uri": "data:application/octet-stream;base64,"
                        + base64.b64encode(blob).decode("ascii")}]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,8 +238,10 @@ class Mcp:
         with urllib.request.urlopen(request, timeout=25) as response:
             response.read()
         tools = self.rpc("tools/list", {})["tools"]
-        required = {"load_file", "get_scene", "get_viewer_state", "set_transform",
-                    "set_active_camera", "set_transforms", "set_render", "set_handle_mode", "select_entity"}
+        required = {"load_file", "get_scene", "get_viewer_state", "set_transform", "get_transform",
+                    "set_active_camera", "set_render", "set_handle_mode", "select_entity",
+                    "play_clip", "stop_animation", "set_animation", "get_animation",
+                    "toggle_playback", "get_morph_weights", "set_morph_weight"}
         missing = required - {tool["name"] for tool in tools}
         if missing:
             raise RuntimeError(f"Viewer is missing tools: {sorted(missing)}")
@@ -214,7 +271,7 @@ def wait_for_scene(client, objects, scene_name, timeout=30):
 def run(args):
     objects = choreography(args.seed, args.objects)
     scene = args.scene.resolve()
-    scene_name = write_scene(scene, objects, args.shape)
+    scene_name = write_scene(scene, objects, args.shape, args.duration)
     print(f"Scene: {scene}\nSeed: {args.seed}; objects: {args.objects}", flush=True)
     if args.dry_run:
         print(json.dumps({"camera_midpoint": camera_pose(0.5),
@@ -237,23 +294,59 @@ def run(args):
         if time.monotonic() > deadline:
             raise RuntimeError("The cinematic camera was not activated.")
         time.sleep(0.05)
-    print("Playing: rise / floating turn / dolly reveal / landing. Ctrl+C freezes the scene.", flush=True)
+    client.call("stop_animation")
+    client.call("set_animation", time=0, speed=1, looping=False, blend_time=0)
+    client.call("play_clip", index=0, blend_time=0)
+    animation = wait_for_animation(client, lambda state: state["playing"] and state["time"] > 0)
+    hero = entities[objects[0]["name"]]
+    initial_weights = client.call("get_morph_weights", entity=hero)["weights"]
+    if len(initial_weights) != 2:
+        raise RuntimeError(f"Expected two imported morph targets, got {initial_weights}")
+    print("Playing native clip: object tweens + cinematic camera. MCP drives Expand/Twist morphs.", flush=True)
     started, frames = time.monotonic(), 0
-    while True:
-        tick = time.monotonic()
-        t = min(1.0, (tick - started) / args.duration)
-        transforms = [{"entity": camera, **camera_pose(t)}]
-        transforms.extend({"entity": entities[obj["name"]],
-                           **object_pose(obj, i, len(objects), t)}
-                          for i, obj in enumerate(objects))
-        client.call("set_transforms", transforms=transforms)
-        frames += 1
-        if t >= 1:
-            break
-        time.sleep(max(0, 1 / args.fps - (time.monotonic() - tick)))
+    verified_morph = False
+    try:
+        while True:
+            tick = time.monotonic()
+            animation = client.call("get_animation")
+            t = min(1.0, animation["time"] / args.duration)
+            # Two actual vertex-deformation weights, independent of transform tracks.
+            expand = 0.5 - 0.5 * math.cos(t * math.tau * 3)
+            twist = 0.5 - 0.5 * math.cos(t * math.tau * 2)
+            client.call("set_morph_weight", entity=hero, index=0, weight=expand)
+            client.call("set_morph_weight", entity=hero, index=1, weight=twist)
+            if not verified_morph and expand > 0.4:
+                actual = client.call("get_morph_weights", entity=hero)["weights"]
+                if any(abs(a - b) > 1e-5 for a, b in zip(actual, (expand, twist))):
+                    raise RuntimeError(f"Morph edits did not reach the scene: {actual}")
+                camera_now = client.call("get_transform", entity=camera)["translation"]
+                if sum((a - b) ** 2 for a, b in zip(camera_now, camera_pose(0)["translation"])) < 0.001:
+                    raise RuntimeError("The native camera animation did not move")
+                if args.screenshot:
+                    preview = args.screenshot.resolve().with_name(args.screenshot.stem + "-morph" + args.screenshot.suffix)
+                    preview.parent.mkdir(parents=True, exist_ok=True)
+                    client.call("screenshot", path=str(preview))
+                    print(f"Live morph capture queued: {preview}", flush=True)
+                verified_morph = True
+                print(f"Verified native camera motion and live morph weights: {actual}", flush=True)
+            frames += 1
+            if t >= 0.999 or not animation["playing"]:
+                break
+            if time.monotonic() - started > args.duration + 15:
+                raise RuntimeError("Native animation did not reach its endpoint")
+            time.sleep(max(0, 1 / args.fps - (time.monotonic() - tick)))
+    finally:
+        # Pause and seek, preserving the final camera/object pose. Also runs on Ctrl+C.
+        state = client.call("get_animation")
+        if state["playing"]:
+            client.call("toggle_playback")
+            wait_for_animation(client, lambda current: not current["playing"])
+    if not verified_morph:
+        raise RuntimeError("Playback ended before a nonzero morph pose could be verified; use a longer duration")
+    weights = client.call("get_morph_weights", entity=hero)["weights"]
     elapsed = time.monotonic() - started
-    print(f"Finished {frames} updates in {elapsed:.2f}s ({frames / elapsed:.1f} Hz); "
-          f"{client.calls} MCP tool calls. Final scene remains open.")
+    print(f"Native clip time: {animation['time']:.2f}s; {frames} MCP morph updates in {elapsed:.2f}s; "
+          f"final morph weights: {weights}; {client.calls} tool calls. Final scene remains open.")
     if args.screenshot:
         output = args.screenshot.resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
