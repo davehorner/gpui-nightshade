@@ -79,3 +79,5 @@ To control the same shared scene from several cameras, use `client.call_applied(
 ## Vulkan / DirectX 12 benchmark
 
 `benchmark.py` runs this longer four-act animation against an optimized, offscreen native viewer host. It freezes asset hashes and RNG state, repeats both backends, and records completed rendering, GPU timestamp spans and readback separately. See [reproduction and metric definitions](../../docs/backend-benchmark.md) and [measured results](../../docs/benchmarks.md). This does not measure GPUI display or shared-texture presentation.
+
+`presentation_benchmark.py` reuses the frozen manifest to compare Vulkan sharing and Vulkan readback in the actual visible GPUI editor. It measures unique scene publication/adoption and associated Present submissions, with two repetitions per mode. See [presentation method and reproduction](../../docs/presentation-benchmark.md).

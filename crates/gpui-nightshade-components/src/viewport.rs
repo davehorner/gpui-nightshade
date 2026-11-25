@@ -303,10 +303,11 @@ impl Render for NightshadeViewport {
             ]);
         }
         let (image, diagnostics) = self.worker.take();
-        if let Some(image) = image
-            && let Some(old) = self.image.replace(image)
-        {
-            let _ = window.drop_image(old.image);
+        if let Some(image) = image {
+            crate::benchmark::adopt(image.info, image.benchmark.as_ref());
+            if let Some(old) = self.image.replace(image) {
+                let _ = window.drop_image(old.image);
+            }
         }
         self.diagnostics = diagnostics;
         let image = self.image.as_ref().map(|frame| frame.image.clone());

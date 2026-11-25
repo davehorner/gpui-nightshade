@@ -1,5 +1,34 @@
 # Measurements
 
+## Visible Vulkan sharing vs readback (2026-11-25)
+
+The actual optimized GPUI editor, RTX 4080 / driver 617.42, **1351x715 physical viewport**, four cameras sharing one scene. The same frozen seed-7 cube, coiled spring, morph sphere and Fox each ran for 24 seconds, excluding two seconds of warmup per act. Pass order sharing/readback/readback/sharing. Every value below equally weights act/pass means.
+
+| Metric | Vulkan sharing | Vulkan readback |
+| --- | ---: | ---: |
+| Unique scene frames associated with Present / second | 24.09 | 32.46 |
+| Worker-published frames / second | 33.89 | 38.65 |
+| Total Present submissions / second | 29.29 | 36.86 |
+| CPU scene advance + render submission, ms | 7.45 | 7.80 |
+| Render start to worker publication, ms | 28.57 | 35.15 |
+| Render start to viewport adoption, ms | 36.99 | 46.44 |
+| Render start to first associated Present return, ms | 39.26 | 48.61 |
+
+Sharing produced **25.8% fewer unique scene updates**, with **19.2% lower first-Present age**. Sharing is working, but this implementation is not yet a throughput improvement. The two sharing passes averaged 24.13 and 24.05 updates/s; readback averaged 32.57 and 32.34. Per-act two-pass unique-update means:
+
+| Act | Sharing updates/s | Readback updates/s |
+| --- | ---: | ---: |
+| AnimatedMorphCube | 23.88 | 31.83 |
+| CoiledSpring | 24.19 | 32.66 |
+| AnimatedMorphSphere | 24.00 | 32.79 |
+| Fox | 24.27 | 32.55 |
+
+These events end at successful **CPU Present API return**, not GPU completion or physical scanout. Unique updates associate each adopted image with the next Present; total Present calls also include repeated scene images. Normal worker pacing and UI polling remain enabled. Background desktop telemetry before the first run reported 38% GPU activity and 12,233 MiB allocated; per-pass telemetry is retained. Two repetitions on one active desktop are limited evidence.
+
+The next performance investigation should target shared-frame availability, UI adoption and import/retirement scheduling: sharing publishes 33.89 frames/s but only 24.09 are adopted, versus 38.65 and 32.46 for readback. CPU render submission is similar between modes. This localizes further measurement; it does not establish a single cause.
+
+See [method and reproduction](presentation-benchmark.md) and [retained timings, percentiles, playback choices, hashes and telemetry](benchmarks/2026-11-25-presentation.json). Raw logs and captures are in `target/presentation-benchmark-measured`, packaged as `target/presentation-benchmark-results.zip`. Release build, strict workspace Clippy, workspace tests, nine serial native GPU regressions and nine Python example tests passed. All four timed runs confirmed Vulkan and the requested transport, identical viewport dimensions and identical RNG playback choices; re-parsing raw logs reproduced the retained summaries.
+
 ## Longer animation: Vulkan vs DX12 (2026-11-25)
 
 Optimized Rust build, RTX 4080, NVIDIA driver 617.42, 1920x1080, four shared scene cameras. Frozen seed-7 assets and playback choices; four acts at 24 seconds each. Pass order DX12/Vulkan/Vulkan/DX12, two-second per-act warmup omitted. 15,091 measured frames. Values below are completed offscreen render time including scene advance and GPU completion, excluding CPU pixel readback. Each cell gives equal weight to the two pass means.

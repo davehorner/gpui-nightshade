@@ -31,6 +31,7 @@ pub struct ViewRequest {
 pub(crate) struct ViewportFrame {
     pub image: Arc<RenderImage>,
     pub info: FrameInfo,
+    pub benchmark: Option<crate::benchmark::Stamp>,
 }
 
 struct State {
@@ -103,6 +104,9 @@ impl Worker {
         self.thread.take()
     }
     pub fn paint_failed(&self, error: String) {
+        if crate::benchmark::enabled() {
+            eprintln!("NSBENCH event=paint_error message={error}");
+        }
         let mut state = self.shared.0.lock().unwrap();
         if matches!(
             state.status.requested,
@@ -371,6 +375,14 @@ fn run(
         state.status.adapter = Some(host.renderer().gpu_profile.name.clone());
         state.status.graphics_backend = Some(host.renderer().device.adapter_info().backend);
     }
+    if crate::benchmark::enabled() {
+        eprintln!(
+            "NSBENCH event=meta graphics={:?} transport={:?}",
+            host.renderer().device.adapter_info().backend,
+            shared.0.lock().unwrap().status.active.unwrap()
+        );
+    }
+    let mut bench = crate::benchmark::Recorder::default();
     let mut applied = 0;
     let mut sequence = 0;
     let mut pick_sequence = None;
@@ -560,7 +572,9 @@ fn run(
             if let Some(event) = shared.0.lock().unwrap().input.pop() {
                 host.pointer_input(event);
             }
+            let bench_start = bench.begin();
             host.render()?;
+            let bench_stamp = bench.rendered(bench_start);
             sync_camera_layout(
                 shared,
                 host.camera_layout_state(),
@@ -577,6 +591,13 @@ fn run(
                         source,
                         sequence,
                     )? {
+                        bench.submitted(
+                            gpui_nightshade::presentation::FrameId {
+                                generation,
+                                sequence,
+                            },
+                            bench_stamp,
+                        );
                         applied = revision;
                         sequence += 1;
                     }
@@ -586,6 +607,13 @@ fn run(
                     if let Some(frame) =
                         ring.copy_frame(&host.renderer().device, &host.renderer().queue, source)?
                     {
+                        bench.submitted(
+                            FrameId {
+                                generation,
+                                sequence,
+                            },
+                            bench_stamp,
+                        );
                         applied = revision;
                         ring.queue_frame(
                             frame,
@@ -636,6 +664,7 @@ fn run(
                 state.image = Some(ViewportFrame {
                     image: Arc::new(RenderImage::from_external(frame)),
                     info,
+                    benchmark: bench.publish(info, "shared"),
                 });
                 state.changed = true;
             }
@@ -660,7 +689,11 @@ fn run(
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(image)]));
             let mut state = shared.0.lock().unwrap();
             if frame.id.generation == generation {
-                state.image = Some(ViewportFrame { image, info });
+                state.image = Some(ViewportFrame {
+                    image,
+                    info,
+                    benchmark: bench.publish(info, "readback"),
+                });
                 state.changed = true;
                 state.diagnostics = format!(
                     "{} {:?} | asynchronous readback | {}x{} | {:.1} ms | {} dropped | {} KiB staging | frame {}",

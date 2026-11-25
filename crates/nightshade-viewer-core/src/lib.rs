@@ -58,7 +58,14 @@ impl ViewerRuntime {
             width,
             height,
             connection,
-            ViewerCorePlugin::default(),
+            if std::env::var_os("GPUI_NIGHTSHADE_BENCHMARK").is_some() {
+                ViewerCorePlugin {
+                    persist_settings: false,
+                    remote_catalogs: false,
+                }
+            } else {
+                ViewerCorePlugin::default()
+            },
         )
         .await
     }

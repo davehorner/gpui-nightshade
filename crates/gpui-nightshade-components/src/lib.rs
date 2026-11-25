@@ -2,6 +2,7 @@ pub use gpui_kit;
 pub mod viewport;
 mod visibility;
 mod worker;
+mod benchmark;
 pub use viewport::NightshadeViewport;
 #[cfg(target_os = "windows")]
 mod windows;

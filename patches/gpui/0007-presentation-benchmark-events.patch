@@ -1,0 +1,40 @@
+diff --git a/gpui-windows/src/directx_renderer.rs b/gpui-windows/src/directx_renderer.rs
+--- a/gpui-windows/src/directx_renderer.rs
++++ b/gpui-windows/src/directx_renderer.rs
+@@ -262,6 +262,11 @@
+ 
+     #[inline]
+     fn present(&mut self) -> Result<()> {
++        static BENCHMARK:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
++        let bench = *BENCHMARK.get_or_init(|| {
++            std::env::var_os("GPUI_NIGHTSHADE_BENCHMARK").is_some()
++        });
++        let bench_start = bench.then(std::time::Instant::now);
+         let result = unsafe {
+             self.resources
+                 .as_ref()
+@@ -275,6 +280,24 @@
+             }
+         }
+         result.ok().context("Presenting swap chain failed")?;
++        if let Some(start) = bench_start {
++            use windows::Win32::System::Performance::{
++                QueryPerformanceCounter, QueryPerformanceFrequency,
++            };
++            static FREQUENCY: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
++            let frequency = *FREQUENCY.get_or_init(|| {
++                let mut value = 0;
++                unsafe { QueryPerformanceFrequency(&mut value) }.unwrap();
++                value
++            });
++            let mut counter = 0;
++            unsafe { QueryPerformanceCounter(&mut counter) }.unwrap();
++            let ns = counter as u128 * 1_000_000_000 / frequency as u128;
++            eprintln!(
++                "NSBENCH event=present ns={ns} present_cpu_ms={:.6}",
++                start.elapsed().as_secs_f64() * 1000.
++            );
++        }
+         if std::env::var_os("GPUI_NIGHTSHADE_TRACE_GPU").is_some() {
+             static PRESENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+             let count = PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
