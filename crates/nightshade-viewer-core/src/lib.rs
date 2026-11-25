@@ -98,6 +98,29 @@ impl ViewerRuntime {
         runtime.render()?;
         Ok(runtime)
     }
+    fn advance_scene(&mut self) {
+        {
+            let mut queue = self.connection.actions.lock().unwrap();
+            while let Some(action) = queue.pop_front() {
+                if let Err(action) = viewer::core::submit(&mut self.world, action) {
+                    queue.push_front(action);
+                    break;
+                }
+            }
+        }
+        nightshade_window::run::advance_timing(&mut self.world.resources);
+        self.world.increment_tick();
+        self.stages.run_systems(&mut self.world);
+    }
+    fn draw_frame(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.frame
+            .update(&self.world.storage, &mut self.world.resources)
+            .map_err(|e| e.0)?;
+        self.frame
+            .prepare(&mut self.world.storage, &mut self.world.resources);
+        self.frame.render(&mut self.world).map_err(|e| e.0)?;
+        Ok(())
+    }
     fn publish(&self) {
         *self.connection.latest.lock().unwrap() =
             Some(Arc::new(viewer::core::snapshot(&self.world)));
@@ -111,24 +134,23 @@ impl ViewportHost for ViewerRuntime {
         &mut self.frame.renderer
     }
     fn render(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.advance_scene();
+        self.draw_frame()?;
+        self.publish();
+        Ok(())
+    }
+    fn service_hidden(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.advance_scene();
+        // Explicit screenshot/texture/sky jobs must still complete when tabbed away.
+        if !self
+            .world
+            .res::<nightshade_graphics::resources::queues::CommandQueues>()
+            .render
+            .is_empty()
+            || self.frame.renderer.screenshot_pending()
         {
-            let mut queue = self.connection.actions.lock().unwrap();
-            while let Some(action) = queue.pop_front() {
-                if let Err(action) = viewer::core::submit(&mut self.world, action) {
-                    queue.push_front(action);
-                    break;
-                }
-            }
+            self.draw_frame()?;
         }
-        nightshade_window::run::advance_timing(&mut self.world.resources);
-        self.world.increment_tick();
-        self.stages.run_systems(&mut self.world);
-        self.frame
-            .update(&self.world.storage, &mut self.world.resources)
-            .map_err(|e| e.0)?;
-        self.frame
-            .prepare(&mut self.world.storage, &mut self.world.resources);
-        self.frame.render(&mut self.world).map_err(|e| e.0)?;
         self.publish();
         Ok(())
     }

@@ -19,6 +19,7 @@ pub struct ViewRequest {
     pub target: [f32; 3],
     pub pick: Option<(u32, u32, u64)>,
 }
+
 struct State {
     preference: BackendPreference,
     fallback: bool,
@@ -26,6 +27,9 @@ struct State {
     revision: u64,
     quit: bool,
     changed: bool,
+    visible: bool,
+    rendered_frames: u64,
+    hidden_ticks: u64,
     image: Option<Arc<RenderImage>>,
     error: Option<String>,
     pub diagnostics: String,
@@ -56,6 +60,9 @@ impl Worker {
                 revision: 1,
                 quit: false,
                 changed: false,
+                visible: true,
+                rendered_frames: 0,
+                hidden_ticks: 0,
                 image: None,
                 error: None,
                 diagnostics: "Initializing GPU".into(),
@@ -98,6 +105,16 @@ impl Worker {
         let mut state = self.shared.0.lock().unwrap();
         if state.request != request {
             state.request = request;
+            state.revision += 1;
+            self.shared.1.notify_one();
+        }
+    }
+    pub fn set_visible(&self, visible: bool) {
+        let mut state = self.shared.0.lock().unwrap();
+        if state.visible != visible {
+            state.visible = visible;
+            state.input.cancel();
+            state.request.pick = None;
             state.revision += 1;
             self.shared.1.notify_one();
         }
@@ -241,7 +258,7 @@ fn run(
     let mut last_camera = None;
     loop {
         transport.check_device()?;
-        let (request, revision, fallback, input_pending) = {
+        let (request, revision, fallback, input_pending, visible) = {
             let mut state = shared.0.lock().unwrap();
             while !state.quit
                 && state.revision == applied
@@ -260,8 +277,31 @@ fn run(
                 state.revision,
                 state.fallback,
                 !state.input.is_empty(),
+                state.visible,
             )
         };
+        if !visible {
+            if let Some(event) = shared.0.lock().unwrap().input.pop() {
+                host.pointer_input(event);
+            }
+            host.service_hidden()?;
+            // Finish outstanding copies without allocating/publishing new UI images.
+            host.renderer().device.poll(wgpu::PollType::Poll)?;
+            if let Transport::Readback(ring) = &mut transport {
+                let _ = ring.take_latest();
+            }
+            pick_pending = false;
+            applied = revision;
+            let mut state = shared.0.lock().unwrap();
+            state.hidden_ticks += 1;
+            if !state.quit && !state.visible {
+                let _ = shared
+                    .1
+                    .wait_timeout(state, Duration::from_millis(16))
+                    .unwrap();
+            }
+            continue;
+        }
         if gpu && fallback && transport.can_resize() {
             transport = Transport::new(
                 host.as_ref(),
@@ -325,6 +365,7 @@ fn run(
                 host.pointer_input(event);
             }
             host.render()?;
+            shared.0.lock().unwrap().rendered_frames += 1;
             let source = host.renderer().external_output.as_ref().unwrap();
             match &mut transport {
                 Transport::Readback(ring) => {
@@ -399,5 +440,79 @@ fn run(
         } else if transport.in_flight() > 0 || revision != applied || pick_pending {
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+    use gpui_nightshade::host::{CameraPose, SceneHost, ViewportHost, WgpuRenderer};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
+    struct ContinuousHost(SceneHost);
+    impl ViewportHost for ContinuousHost {
+        fn renderer(&self) -> &WgpuRenderer {
+            &self.0.renderer
+        }
+        fn renderer_mut(&mut self) -> &mut WgpuRenderer {
+            &mut self.0.renderer
+        }
+        fn render(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+            self.0.render()
+        }
+        fn set_camera(&mut self, pose: CameraPose) {
+            self.0.set_camera(pose);
+        }
+        fn request_pick(&mut self, x: u32, y: u32) {
+            self.0.request_pick(x, y);
+        }
+        fn poll_pick(&mut self) -> Option<Option<u32>> {
+            self.0.poll_pick()
+        }
+        fn continuous(&self) -> bool {
+            true
+        }
+    }
+    fn wait_for(worker: &Worker, predicate: impl Fn(&State) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            let state = worker.shared.0.lock().unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+            if predicate(&state) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "render worker timed out");
+            drop(state);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    #[test]
+    #[ignore = "requires a working native GPU adapter"]
+    fn hidden_worker_services_without_presenting_and_resumes_same_host() {
+        let constructions = Arc::new(AtomicUsize::new(0));
+        let count = constructions.clone();
+        let factory: crate::SceneFactory = Arc::new(move |backends, w, h| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(ContinuousHost(pollster::block_on(
+                SceneHost::cube_with_backends(w, h, backends),
+            )?)))
+        });
+        let mut worker = Worker::new(BackendPreference::Readback, factory);
+        wait_for(&worker, |s| s.rendered_frames >= 2);
+        worker.set_visible(false);
+        wait_for(&worker, |s| s.hidden_ticks >= 2);
+        let frames = worker.shared.0.lock().unwrap().rendered_frames;
+        let mut request = worker.shared.0.lock().unwrap().request;
+        request.width = 321;
+        request.height = 187;
+        worker.request(request);
+        wait_for(&worker, |s| s.hidden_ticks >= 6);
+        assert_eq!(worker.shared.0.lock().unwrap().rendered_frames, frames);
+        worker.set_visible(true);
+        wait_for(&worker, |s| s.rendered_frames > frames);
+        assert_eq!(constructions.load(Ordering::SeqCst), 1);
+        worker.shutdown().unwrap().join().unwrap();
     }
 }

@@ -796,6 +796,10 @@ impl Render for Editor {
                 .flat_map(|b| b.entries.iter().map(|e| e.key.clone())),
             window,
         );
+        let viewport_visible = self.dock.viewport_visible(cx);
+        self.viewport.update(cx, |viewport, cx| {
+            viewport.set_visible(viewport_visible, cx)
+        });
         if let Some(snapshot) = &snapshot {
             let selected = snapshot.selection.selected.map(|e| (e.id, e.generation));
             if selected != self.field_selection {
@@ -988,10 +992,15 @@ impl Render for Editor {
                             .as_ref()
                             .map(|s| {
                                 format!(
-                                    "{} nodes · {} · {}",
+                                    "{} nodes · {} · {}{}",
                                     s.nodes.len(),
                                     if s.loading { "Loading" } else { "Ready" },
-                                    s.notice.clone().unwrap_or_default()
+                                    s.notice.clone().unwrap_or_default(),
+                                    if viewport_visible {
+                                        ""
+                                    } else {
+                                        " · Viewport paused; scene live"
+                                    }
                                 )
                             })
                             .unwrap_or("Starting trunk viewer".into())

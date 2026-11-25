@@ -10,6 +10,7 @@ pub struct NightshadeViewport {
     last_pointer: Option<Point<Pixels>>,
     drag_button: Option<MouseButton>,
     scene_input: bool,
+    visible: bool,
     input_subscriptions: Option<Vec<Subscription>>,
     focus: FocusHandle,
     bounds: Bounds<Pixels>,
@@ -55,7 +56,7 @@ impl NightshadeViewport {
                     .await;
                 if view
                     .update(cx, |view, cx| {
-                        if view.worker.has_update() {
+                        if view.visible && view.worker.has_update() {
                             cx.notify();
                         }
                     })
@@ -81,6 +82,7 @@ impl NightshadeViewport {
             last_pointer: None,
             drag_button: None,
             scene_input: false,
+            visible: true,
             input_subscriptions: None,
             bounds: Bounds::default(),
             scale: 1.,
@@ -93,6 +95,16 @@ impl NightshadeViewport {
     pub fn with_scene_input(mut self) -> Self {
         self.scene_input = true;
         self
+    }
+    /// Suspend presentation while retaining the scene worker and simulation service.
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible != visible {
+            self.visible = visible;
+            self.cancel_input();
+            self.request.pick = None;
+            self.worker.set_visible(visible);
+            cx.notify();
+        }
     }
     fn local_position(&self, position: Point<Pixels>, captured: bool) -> Option<[f32; 2]> {
         gpui_nightshade::input::local_pointer(

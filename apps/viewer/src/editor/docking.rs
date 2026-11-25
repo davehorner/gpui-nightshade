@@ -1,8 +1,8 @@
 use super::*;
 mod persistence;
 use gpui_kit::component::dock::{
-    BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelEvent, panel_handle,
-    register_panel,
+    BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, NodeId, PaneNode, PaneRef, Panel,
+    PanelEvent, PanelId, panel_handle, register_panel,
 };
 
 #[derive(Clone, Copy)]
@@ -100,6 +100,20 @@ pub(super) struct EditorDock {
 }
 
 impl EditorDock {
+    pub fn viewport_visible(&self, cx: &App) -> bool {
+        let area = self.area.read(cx);
+        let panel = PanelId::from(self.panels[1].entity_id());
+        [
+            DockPlacement::Center,
+            DockPlacement::Left,
+            DockPlacement::Right,
+            DockPlacement::Bottom,
+        ]
+        .into_iter()
+        .filter(|placement| *placement == DockPlacement::Center || area.is_dock_open(*placement))
+        .filter_map(|placement| area.layout(placement))
+        .any(|tree| displayed(tree.root(), panel, area.zoomed_group()))
+    }
     pub fn new(editor: WeakEntity<Editor>, window: &mut Window, cx: &mut Context<Editor>) -> Self {
         let (area, _) = DockSkin::dock_area("nightshade-editor", Some(1), window, cx);
         let panels = [
@@ -196,5 +210,54 @@ impl EditorDock {
                 cx,
             );
         });
+    }
+}
+
+fn displayed(node: &PaneNode, panel: PanelId, zoom: Option<NodeId>) -> bool {
+    match node.kind() {
+        PaneRef::Tabs { panels, active_ix } => {
+            zoom.is_none_or(|id| id == node.id()) && panels.get(active_ix) == Some(&panel)
+        }
+        PaneRef::Split { children, .. } => {
+            children.iter().any(|child| displayed(child, panel, zoom))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+    use gpui_kit::component::dock::{PaneTree, PanelBuilder, PanelInfo, PanelState, RootKind};
+
+    struct Builder;
+    impl PanelBuilder for Builder {
+        fn build(&mut self, state: &PanelState, _: &PanelInfo) -> PanelId {
+            PanelId::from_u64(if state.panel_name == "Viewport" { 1 } else { 2 })
+        }
+    }
+    #[test]
+    fn visibility_follows_active_tab_and_zoomed_group() {
+        let tabs = |names: &[&str], active| PanelState {
+            panel_name: "TabPanel".into(),
+            children: names.iter().map(|name| PanelState::new(*name)).collect(),
+            info: PanelInfo::tabs(active),
+        };
+        let mut state = PanelState {
+            panel_name: "StackPanel".into(),
+            children: vec![tabs(&["Viewport", "Inspector"], 0), tabs(&["Scene"], 0)],
+            info: PanelInfo::stack(vec![px(600.), px(240.)], Axis::Horizontal),
+        };
+        let tree = PaneTree::from_state(&state, RootKind::Split, &mut Builder);
+        let panel = PanelId::from_u64(1);
+        assert!(displayed(tree.root(), panel, None));
+        let PaneRef::Split { children, .. } = tree.root().kind() else {
+            panic!("split")
+        };
+        assert!(displayed(tree.root(), panel, Some(children[0].id())));
+        assert!(!displayed(tree.root(), panel, Some(children[1].id())));
+        state.children[0].info = PanelInfo::tabs(1);
+        let tree = PaneTree::from_state(&state, RootKind::Split, &mut Builder);
+        assert!(!displayed(tree.root(), panel, None));
     }
 }

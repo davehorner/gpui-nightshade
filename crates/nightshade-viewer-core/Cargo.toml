@@ -11,6 +11,7 @@ nightshade.workspace = true
 nightshade-wgpu.workspace = true
 nightshade-window = { path = "../../upstream/nightshade/crates/plugins/compose/nightshade-window" }
 nightshade-platform = { path = "../../upstream/nightshade/crates/plugins/describe/nightshade-platform" }
+nightshade-graphics = { path = "../../upstream/nightshade/crates/plugins/domain/nightshade-graphics" }
 nightshade-camera = { path = "../../upstream/nightshade/crates/plugins/domain/nightshade-camera" }
 nightshade-camera-controller = { path = "../../upstream/nightshade/crates/plugins/domain/nightshade-camera-controller" }
 pollster.workspace = true

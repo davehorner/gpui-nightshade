@@ -18,6 +18,7 @@ test-core:
 
 test-gpu:
     cargo test -p gpui-nightshade --locked -- --include-ignored
+    cargo test -p gpui-nightshade-components --locked -- --include-ignored
 
 headless:
     cargo run --locked --example headless

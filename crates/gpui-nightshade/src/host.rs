@@ -231,6 +231,11 @@ pub trait ViewportHost {
     fn renderer(&self) -> &WgpuRenderer;
     fn renderer_mut(&mut self) -> &mut WgpuRenderer;
     fn render(&mut self) -> Result<(), Box<dyn std::error::Error>>;
+    /// Service simulation and frontend actions without producing a presentation frame.
+    /// Hosts may render on demand for explicit output jobs such as screenshots.
+    fn service_hidden(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
     fn set_camera(&mut self, pose: CameraPose);
     fn pointer_input(&mut self, _input: crate::input::PointerInput) {}
     fn request_pick(&mut self, x: u32, y: u32);
