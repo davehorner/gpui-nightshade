@@ -2405,6 +2405,20 @@ index 0026da3..c34ed03 100644
 +        );
 +    }
 +}
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs
+index f92b14a..7599d9f 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs
+@@ -212,7 +212,8 @@ impl MaterialTextureArrays {
+             bindless_next: 0,
+             bindless_free: Vec::new(),
+             bindless_placeholder_view: None,
+-            bindless_dirty: false,
++            // Newly installed passes need the array bindings even before a texture upload.
++            bindless_dirty: true,
+         }
+     }
+ 
 diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs
 index 94a1c7c..9b08c0e 100644
 --- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs

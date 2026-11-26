@@ -74,6 +74,7 @@ extern "C" {
 }
 #[wasm_bindgen]
 pub fn run(model: Option<String>) -> Result<(), JsValue> {
+    console_error_panic_hook::set_once();
     std::panic::set_hook(Box::new(|info| {
         PANIC.with(|slot| *slot.borrow_mut() = info.to_string());
         reportRustPanic(&info.to_string());
