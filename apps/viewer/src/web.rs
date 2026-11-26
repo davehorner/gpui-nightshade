@@ -62,10 +62,21 @@ gpui_kit::assets::icon_assets!(
 );
 thread_local! {static APPLICATION:RefCell<Option<ApplicationHandle>>=const {RefCell::new(None)};
 static PANIC:RefCell<String>=const {RefCell::new(String::new())};}
+#[wasm_bindgen(inline_js = r#"
+export function reportRustPanic(message) {
+  globalThis.__nightshadePanic = message;
+  const show = () => { const boot = document.getElementById('boot'); if (boot) { boot.hidden = false; boot.textContent = 'Nightshade Rust panic:\n' + message; } };
+  show(); queueMicrotask(show);
+}
+"#)]
+extern "C" {
+    fn reportRustPanic(message: &str);
+}
 #[wasm_bindgen]
 pub fn run(model: Option<String>) -> Result<(), JsValue> {
     std::panic::set_hook(Box::new(|info| {
         PANIC.with(|slot| *slot.borrow_mut() = info.to_string());
+        reportRustPanic(&info.to_string());
         console_error_panic_hook::hook(info);
     }));
     let _ = console_log::init_with_level(log::Level::Info);
