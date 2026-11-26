@@ -2406,10 +2406,24 @@ index 0026da3..c34ed03 100644
 +    }
 +}
 diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs
-index f92b14a..7599d9f 100644
+index f92b14a..388baa8 100644
 --- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs
 +++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/material_texture_arrays.rs
-@@ -212,7 +212,8 @@ impl MaterialTextureArrays {
+@@ -4,8 +4,11 @@ use nightshade_render::queries::image::resample_to_size;
+ use nightshade_render::queries::texture::pack_texture_slot;
+ use std::collections::HashMap;
+ 
+-const DEFAULT_LAYER_SIZE: u32 = 1024;
+-const DEFAULT_MAX_LAYERS: u32 = 256;
++// Two full-mip RGBA arrays at 1024x1024x256 reserve about 2.67 GiB.
++// WebGPU has no bindless path here; use a bounded browser texture budget
++// (about 42.7 MiB) rather than reserving desktop-scale arrays on phones.
++const DEFAULT_LAYER_SIZE: u32 = if cfg!(target_arch = "wasm32") { 256 } else { 1024 };
++const DEFAULT_MAX_LAYERS: u32 = if cfg!(target_arch = "wasm32") { 64 } else { 256 };
+ 
+ pub const MATERIAL_SAMPLER_COUNT: usize = 6;
+ 
+@@ -212,7 +215,8 @@ impl MaterialTextureArrays {
              bindless_next: 0,
              bindless_free: Vec::new(),
              bindless_placeholder_view: None,

@@ -2,6 +2,8 @@ pub use gpui_kit;
 mod benchmark;
 pub mod viewport;
 mod visibility;
+#[cfg(any(target_arch = "wasm32", test))]
+mod web_options;
 #[cfg(not(target_arch = "wasm32"))]
 mod worker;
 #[cfg(target_arch = "wasm32")]

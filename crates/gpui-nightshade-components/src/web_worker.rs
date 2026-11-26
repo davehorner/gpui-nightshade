@@ -60,19 +60,41 @@ impl Worker {
             quit: false,
             diagnostics: "Initializing Nightshade WebGPU".into(),
         }));
+        let global = js_sys::global();
+        let property =
+            |object: &js_sys::Object, key: &str| js_sys::Reflect::get(object, &key.into()).ok();
+        let navigator = property(&global, "navigator").map(js_sys::Object::from);
+        let location = property(&global, "location").map(js_sys::Object::from);
+        let ua = navigator
+            .as_ref()
+            .and_then(|n| property(n, "userAgent"))
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let search = location
+            .as_ref()
+            .and_then(|l| property(l, "search"))
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let options = crate::web_options::WebRenderOptions::for_browser(&ua, &search);
         let weak = Rc::downgrade(&shared);
         wasm_bindgen_futures::spawn_local(async move {
             let result = async {
                 let mut host = factory(wgpu::Backends::BROWSER_WEBGPU, 640, 480).await?;
+                let lost=Arc::new(std::sync::Mutex::new(None));
+                let report_lost=lost.clone();
+                host.renderer().device.set_device_lost_callback(move |reason,message| {
+                    *report_lost.lock().unwrap()=Some(format!("Nightshade WebGPU device lost ({reason:?}): {message}. Reload to retry; ?safe=1 reduces GPU load."));
+                });
                 let mut size = (0, 0);
                 let mut generation = 0;
                 let mut sequence = 0;
                 let mut ring: Option<ReadbackRing> = None;
                 loop {
-                    gloo_timers::future::TimeoutFuture::new(16).await;
+                    gloo_timers::future::TimeoutFuture::new(options.frame_ms).await;
                     let Some(shared) = weak.upgrade() else {
                         return Ok::<(), Box<dyn std::error::Error>>(());
                     };
+                    if let Some(error)=lost.lock().unwrap().take(){return Err(error.into());}
                     let (request, visible, input) = {
                         let mut state = shared.borrow_mut();
                         if state.quit {
@@ -92,7 +114,7 @@ impl Worker {
                         continue;
                     }
                     // Bound staging memory and browser raster work on high-DPI displays.
-                    let next = (request.width.clamp(1, 1920), request.height.clamp(1, 1080));
+                    let next = options.render_size(request.width,request.height);
                     if next != size {
                         host.resize(next.0, next.1)?;
                         size = next;
@@ -104,7 +126,7 @@ impl Worker {
                             generation,
                             host.renderer().surface_format,
                             AlphaMode::Opaque,
-                            3,
+                            options.staging_frames,
                         )?);
                     }
                     host.set_camera_layout(request.layout, request.active_view)?;
@@ -115,16 +137,23 @@ impl Worker {
                         target: request.target,
                     });
                     if let Some((x, y, _)) = request.pick {
-                        host.request_pick(x.min(size.0 - 1), y.min(size.1 - 1));
+                        host.request_pick(
+                            ((u64::from(x)*u64::from(size.0)/u64::from(request.width.max(1))) as u32).min(size.0-1),
+                            ((u64::from(y)*u64::from(size.1)/u64::from(request.height.max(1))) as u32).min(size.1-1),
+                        );
                         shared.borrow_mut().request.pick = None;
                     }
-                    host.render()?;
-                    let renderer = host.renderer();
                     let ring = ring.as_mut().expect("configured readback ring");
-                    if let Some(texture) = renderer.external_output.as_ref() {
-                        ring.enqueue(&renderer.device, &renderer.queue, texture, sequence)?;
-                        sequence += 1;
+                    // Do not submit more GPU work while every readback is still in
+                    // flight. Slow/mobile adapters must apply backpressure upstream.
+                    if ring.in_flight()<options.staging_frames {
+                        host.render()?;
+                        let renderer=host.renderer();
+                        if let Some(texture) = renderer.external_output.as_ref() {
+                            if ring.enqueue(&renderer.device, &renderer.queue, texture, sequence)? {sequence+=1;}
+                        }
                     }
+                    let renderer=host.renderer();
                     // WebGPU invokes map_async callbacks asynchronously when control returns to the browser.
                     if let Some(mut frame) = ring.take_latest() {
                         let info = frame.info();

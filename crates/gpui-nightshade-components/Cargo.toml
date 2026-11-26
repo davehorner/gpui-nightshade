@@ -19,4 +19,5 @@ windows = { version = "0.62", features = ["Win32_Graphics_Direct3D12", "Win32_Gr
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
