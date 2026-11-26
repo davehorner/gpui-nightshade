@@ -33,6 +33,8 @@ jobs:
           tool: wasm-bindgen-cli@0.2.130
       - name: Initialize pinned source dependencies
         run: python scripts/prepare.py
+      - name: Check browser startup diagnostics
+        run: node web/test-startup.mjs
       - name: Build WASM site
         run: python web/build.py --out dist
       - uses: actions/upload-pages-artifact@v3

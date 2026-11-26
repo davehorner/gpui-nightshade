@@ -2,8 +2,11 @@
 <style>html,body,.root{margin:0;width:100%;height:100%;overflow:hidden;background:#0b1220;color:#dce9f7;font:15px system-ui}.main-canvas{width:100%;height:100%;display:block}#boot{position:fixed;inset:0;display:grid;place-content:center;padding:2rem;white-space:pre-wrap}#boot[hidden]{display:none}</style>
 <div id="boot">Loading Nightshade WebGPU viewer…</div>
 <script type="module">
-const boot=document.querySelector('#boot');let runtime;
-function failure(error){boot.hidden=false;boot.textContent=`Nightshade could not start.\n${globalThis.__nightshadePanic||runtime?.last_error?.()||error?.stack||error}\n\nCheck the startup error above and browser console. MCP transport requires the desktop app.`;console.error(error);}
-window.addEventListener('error',event=>failure(event.error||event.message));window.addEventListener('unhandledrejection',event=>failure(event.reason));
-try{if(!navigator.gpu)throw Error('This browser does not expose WebGPU');runtime=await import('./pkg/__BUILD_ID__/nightshade.js');await runtime.default();runtime.run(new URLSearchParams(location.search).get("model"));boot.hidden=true;}catch(error){failure(error);}
+import {startup} from './startup.js?v=__BUILD_ID__';
+const diag=startup(document.querySelector('#boot'),'Nightshade','__BUILD_ID__');
+try {
+  await diag.check();diag.phase('Downloading and compiling the GPUI/Nightshade WASM module');
+  const runtime=await import('./pkg/__BUILD_ID__/nightshade.js');await runtime.default();
+  diag.phase('Starting the GPUI interface');runtime.run(new URLSearchParams(location.search).get('model'));diag.appReady();
+}catch(error){diag.fail(error);}
 </script></html>

@@ -806,6 +806,8 @@ impl Editor {
 }
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_arch = "wasm32")]
+        self.dock.sync_size(window, cx);
         let snapshot = self.snapshot.clone();
         self.thumbnails.update(
             snapshot

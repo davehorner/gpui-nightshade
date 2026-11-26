@@ -95,6 +95,7 @@ impl Render for EditorPanel {
 /// Panels hold weak editor references; moving or resetting never rebuilds the worker.
 pub(super) struct EditorDock {
     pub area: Entity<DockArea>,
+    compact: std::cell::Cell<bool>,
     panels: [Entity<EditorPanel>; 4],
     path: Option<std::path::PathBuf>,
 }
@@ -141,6 +142,7 @@ impl EditorDock {
         }
         let dock = Self {
             area,
+            compact: std::cell::Cell::new(false),
             panels,
             path: persistence::layout_path(),
         };
@@ -171,7 +173,16 @@ impl EditorDock {
         Ok(false)
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn sync_size(&self, window: &mut Window, cx: &mut Context<Editor>) {
+        if self.compact.get() != (f32::from(window.viewport_size().width) < 760.) {
+            self.reset(window, cx);
+        }
+    }
     pub fn reset(&self, window: &mut Window, cx: &mut Context<Editor>) {
+        let compact =
+            cfg!(target_arch = "wasm32") && f32::from(window.viewport_size().width) < 760.;
+        self.compact.set(compact);
         self.area.update(cx, |area, cx| {
             area.set_zoomed_out(window, cx);
             for placement in [
@@ -182,6 +193,18 @@ impl EditorDock {
                 area.remove_dock(placement, window, cx);
             }
             let [scene, viewport, inspector, animation] = self.panels.clone();
+            if compact {
+                area.set_center(
+                    DockLayout::tabs()
+                        .panel_view(panel_handle(viewport), cx)
+                        .panel_view(panel_handle(scene), cx)
+                        .panel_view(panel_handle(inspector), cx)
+                        .panel_view(panel_handle(animation), cx),
+                    window,
+                    cx,
+                );
+                return;
+            }
             // Keep every panel in the center tree so resetting also removes splits
             // made by dragging. The viewport entity itself stays unchanged.
             area.set_center(

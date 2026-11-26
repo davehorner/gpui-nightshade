@@ -3889,3 +3889,29 @@ index 0000000..1b69047
 +        assert_eq!(value["result"]["exposure"], 2.);
 +    }
 +}
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/caps.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/caps.rs
+index 7e312d1..dc4e446 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/caps.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/caps.rs
+@@ -4,18 +4,18 @@ pub const MAX_AREA_LIGHTS: usize = 16;
+ pub const MAX_SPOTLIGHT_SHADOWS: usize = 64;
+ pub const SPOTLIGHT_ATLAS_SLOTS_PER_ROW: u32 = 8;
+ pub const SPOTLIGHT_ATLAS_SIZE: u32 = if cfg!(target_arch = "wasm32") {
+-    1024
++    512
+ } else {
+     4096
+ };
+ 
+ pub const MAX_POINT_LIGHT_SHADOWS: usize = 40;
+-pub const POINT_SHADOW_FACE_SIZE: u32 = 256;
++pub const POINT_SHADOW_FACE_SIZE: u32 = if cfg!(target_arch = "wasm32") { 128 } else { 256 };
+ pub const POINT_SHADOW_NUM_FACES: usize = 6;
+ 
+ pub const CASCADE_ATLAS_SLOTS_PER_ROW: u32 = 2;
+ pub const CASCADE_ATLAS_SIZE: u32 = if cfg!(target_arch = "wasm32") {
+-    4096
++    1024
+ } else {
+     8192
+ };

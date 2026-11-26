@@ -10,7 +10,7 @@ def main():
     version=next(p['version'] for p in tomllib.loads((ROOT/'Cargo.lock').read_text(encoding='utf-8'))['package'] if p['name']=='wasm-bindgen')
     local=ROOT/'target/wasm-tools/bin'/('wasm-bindgen.exe' if os.name=='nt' else 'wasm-bindgen');tool=str(local) if local.exists() else shutil.which('wasm-bindgen')
     if not tool or subprocess.check_output([tool,'--version'],text=True).strip()!=f'wasm-bindgen {version}':raise SystemExit(f'Install wasm-bindgen-cli {version} into target/wasm-tools')
-    token=hashlib.sha256((ROOT/"target/wasm32-unknown-unknown/web/gpui_nightshade_web.wasm").read_bytes()).hexdigest()[:16]
+    token=hashlib.sha256((ROOT/"target/wasm32-unknown-unknown/web/gpui_nightshade_web.wasm").read_bytes()+(ROOT/'web/startup.js').read_bytes()).hexdigest()[:16]
     args.out.mkdir(parents=True,exist_ok=True)
     subprocess.run([tool,str(ROOT/'target/wasm32-unknown-unknown/web/gpui_nightshade_web.wasm'),'--target','web','--out-dir',str(args.out/'pkg'/token),'--out-name','nightshade','--no-typescript'],check=True)
     

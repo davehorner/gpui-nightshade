@@ -78,3 +78,13 @@ Open http://localhost:18767/ with a WebGPU-capable browser. Optional `?model=HTT
 The `Publish WASM to GitHub Pages` workflow builds from pinned source dependencies and deploys after pushes to main/master or manual dispatch. Site: https://davehorner.github.io/gpui-nightshade/.
 
 The browser build includes a compatibility copy of wgpu 29.0.4 whose internal WebGPU enum bindings are private to Rust. This lets Nightshade’s wgpu 29 and GPUI’s wgpu 30 coexist in one WASM module without duplicate JavaScript exports; upstream licenses and Rust APIs are retained.
+
+### Mobile startup diagnostics
+
+Open `?diagnostics=1` to check the browser adapter without downloading the WASM
+application. Copy diagnostics includes the startup stage, WebGPU features and
+limits; it sends nothing automatically. The current renderer requires
+`indirect-first-instance`. Startup stays visible until the first scene frame;
+an interrupted startup can be retried explicitly. Narrow browser windows use
+tabs for the viewport, scene, inspector and animation instead of side-by-side
+panels. Browser shadow targets use a smaller budget; native targets are unchanged.

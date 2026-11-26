@@ -9,6 +9,13 @@ use gpui_nightshade::{
     wgpu,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
+#[wasm_bindgen::prelude::wasm_bindgen(
+    inline_js = "export function reportNightshadeStage(stage,message) { window.dispatchEvent(new CustomEvent('nightshade-stage',{detail:{stage,message}})); }"
+)]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name=reportNightshadeStage)]
+    fn report_stage(stage: &str, message: &str);
+}
 #[derive(Clone, Copy, PartialEq)]
 pub struct ViewRequest {
     pub layout: crate::CameraLayout,
@@ -79,12 +86,14 @@ impl Worker {
         let weak = Rc::downgrade(&shared);
         wasm_bindgen_futures::spawn_local(async move {
             let result = async {
+                report_stage("starting","Creating the Nightshade WebGPU renderer");
                 let mut host = factory(wgpu::Backends::BROWSER_WEBGPU, 640, 480).await?;
                 let lost=Arc::new(std::sync::Mutex::new(None));
                 let report_lost=lost.clone();
                 host.renderer().device.set_device_lost_callback(move |reason,message| {
                     *report_lost.lock().unwrap()=Some(format!("Nightshade WebGPU device lost ({reason:?}): {message}. Reload to retry; ?safe=1 reduces GPU load."));
                 });
+                let mut announced=false;
                 let mut size = (0, 0);
                 let mut generation = 0;
                 let mut sequence = 0;
@@ -157,6 +166,7 @@ impl Worker {
                     // WebGPU invokes map_async callbacks asynchronously when control returns to the browser.
                     if let Some(mut frame) = ring.take_latest() {
                         let info = frame.info();
+                        if !announced {announced=true;report_stage("ready",&format!("First Nightshade frame: {}x{}",frame.width,frame.height));}
                         for pixel in frame.rgba.chunks_exact_mut(4) {
                             pixel.swap(0, 2);
                         }
@@ -182,6 +192,7 @@ impl Worker {
             }
             .await;
             if let Err(error) = result {
+                report_stage("error", &error.to_string());
                 if let Some(shared) = weak.upgrade() {
                     let mut state = shared.borrow_mut();
                     state.status.error = Some(error.to_string());

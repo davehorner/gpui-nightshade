@@ -65,7 +65,7 @@ static PANIC:RefCell<String>=const {RefCell::new(String::new())};}
 #[wasm_bindgen(inline_js = r#"
 export function reportRustPanic(message) {
   globalThis.__nightshadePanic = message;
-  const show = () => { const boot = document.getElementById('boot'); if (boot) { boot.hidden = false; boot.textContent = 'Nightshade Rust panic:\n' + message; } };
+  const show = () => window.dispatchEvent(new CustomEvent('nightshade-panic', {detail:message}));
   show(); queueMicrotask(show);
 }
 "#)]
