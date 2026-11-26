@@ -2,3 +2,6 @@
 /*.log
 **/.cargo-ok
 /upstream/gpui-snapshot/*/Cargo.lock
+
+/gpui-rustel/
+**/__pycache__/

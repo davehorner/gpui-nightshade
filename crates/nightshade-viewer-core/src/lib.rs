@@ -160,12 +160,16 @@ impl ViewportHost for ViewerRuntime {
     fn service_hidden(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.advance_scene();
         // Explicit screenshot/texture/sky jobs must still complete when tabbed away.
+        #[cfg(not(target_arch = "wasm32"))]
+        let screenshot_pending = self.frame.renderer.screenshot_pending();
+        #[cfg(target_arch = "wasm32")]
+        let screenshot_pending = false;
         if !self
             .world
             .res::<nightshade_graphics::resources::queues::CommandQueues>()
             .render
             .is_empty()
-            || self.frame.renderer.screenshot_pending()
+            || screenshot_pending
         {
             self.draw_frame()?;
         }

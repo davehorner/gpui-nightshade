@@ -16,3 +16,7 @@ pollster.workspace = true
 ash = "0.38"
 gpui-windows = { package = "gpui-pre-windows", version = "=0.3.14" }
 windows = { version = "0.62", features = ["Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Performance"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }

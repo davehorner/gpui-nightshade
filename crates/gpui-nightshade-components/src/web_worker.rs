@@ -1,0 +1,213 @@
+//! Browser presentation: asynchronous WebGPU readback, no blocking device waits or OS threads.
+use gpui_kit::RenderImage;
+use gpui_nightshade::{
+    host::CameraPose,
+    presentation::{
+        AlphaMode, BackendPreference, FrameInfo, PresentationBackend, PresentationStatus,
+        readback::ReadbackRing,
+    },
+    wgpu,
+};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
+#[derive(Clone, Copy, PartialEq)]
+pub struct ViewRequest {
+    pub layout: crate::CameraLayout,
+    pub active_view: usize,
+    pub width: u32,
+    pub height: u32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+    pub target: [f32; 3],
+    pub pick: Option<(u32, u32, u64)>,
+}
+#[derive(Clone)]
+pub(crate) struct ViewportFrame {
+    pub image: Arc<RenderImage>,
+    pub info: FrameInfo,
+    pub benchmark: Option<crate::benchmark::Stamp>,
+}
+struct State {
+    request: ViewRequest,
+    input: gpui_nightshade::input::PointerQueue,
+    status: PresentationStatus,
+    image: Option<ViewportFrame>,
+    changed: bool,
+    quit: bool,
+    diagnostics: String,
+}
+pub struct Worker {
+    shared: Rc<RefCell<State>>,
+}
+impl Worker {
+    pub fn new(preference: BackendPreference, factory: crate::SceneFactory) -> Self {
+        let shared = Rc::new(RefCell::new(State {
+            request: ViewRequest {
+                layout: Default::default(),
+                active_view: 0,
+                width: 640,
+                height: 480,
+                yaw: 0.6,
+                pitch: 0.35,
+                distance: 4.,
+                target: [0.; 3],
+                pick: None,
+            },
+            input: Default::default(),
+            status: PresentationStatus::initializing(preference),
+            image: None,
+            changed: false,
+            quit: false,
+            diagnostics: "Initializing Nightshade WebGPU".into(),
+        }));
+        let weak = Rc::downgrade(&shared);
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = async {
+                let mut host = factory(wgpu::Backends::BROWSER_WEBGPU, 640, 480).await?;
+                let mut size = (0, 0);
+                let mut generation = 0;
+                let mut sequence = 0;
+                let mut ring: Option<ReadbackRing> = None;
+                loop {
+                    gloo_timers::future::TimeoutFuture::new(16).await;
+                    let Some(shared) = weak.upgrade() else {
+                        return Ok::<(), Box<dyn std::error::Error>>(());
+                    };
+                    let (request, visible, input) = {
+                        let mut state = shared.borrow_mut();
+                        if state.quit {
+                            return Ok(());
+                        }
+                        let mut input = Vec::new();
+                        while let Some(event) = state.input.pop() {
+                            input.push(event);
+                        }
+                        (state.request, state.status.visible, input)
+                    };
+                    for event in input {
+                        host.pointer_input(event);
+                    }
+                    if !visible {
+                        host.service_hidden()?;
+                        continue;
+                    }
+                    // Bound staging memory and browser raster work on high-DPI displays.
+                    let next = (request.width.clamp(1, 1920), request.height.clamp(1, 1080));
+                    if next != size {
+                        host.resize(next.0, next.1)?;
+                        size = next;
+                        generation += 1;
+                        ring = Some(ReadbackRing::new(
+                            &host.renderer().device,
+                            size.0,
+                            size.1,
+                            generation,
+                            host.renderer().surface_format,
+                            AlphaMode::Opaque,
+                            3,
+                        )?);
+                    }
+                    host.set_camera_layout(request.layout, request.active_view)?;
+                    host.set_camera(CameraPose {
+                        yaw: request.yaw,
+                        pitch: request.pitch,
+                        distance: request.distance,
+                        target: request.target,
+                    });
+                    if let Some((x, y, _)) = request.pick {
+                        host.request_pick(x.min(size.0 - 1), y.min(size.1 - 1));
+                        shared.borrow_mut().request.pick = None;
+                    }
+                    host.render()?;
+                    let renderer = host.renderer();
+                    let ring = ring.as_mut().expect("configured readback ring");
+                    if let Some(texture) = renderer.external_output.as_ref() {
+                        ring.enqueue(&renderer.device, &renderer.queue, texture, sequence)?;
+                        sequence += 1;
+                    }
+                    // WebGPU invokes map_async callbacks asynchronously when control returns to the browser.
+                    if let Some(mut frame) = ring.take_latest() {
+                        let info = frame.info();
+                        for pixel in frame.rgba.chunks_exact_mut(4) {
+                            pixel.swap(0, 2);
+                        }
+                        let pixels =
+                            image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+                                .ok_or("Invalid WebGPU frame")?;
+                        let mut state = shared.borrow_mut();
+                        state.image = Some(ViewportFrame {
+                            image: Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])),
+                            info,
+                            benchmark: None,
+                        });
+                        state.status.active = Some(PresentationBackend::Readback);
+                        state.status.graphics_backend = Some(wgpu::Backend::BrowserWebGpu);
+                        state.status.adapter = Some(renderer.gpu_profile.name.clone());
+                        state.changed = true;
+                        state.diagnostics = format!(
+                            "Nightshade WebGPU · {}×{} · frame {} · asynchronous readback",
+                            size.0, size.1, info.id.sequence
+                        );
+                    }
+                }
+            }
+            .await;
+            if let Err(error) = result {
+                if let Some(shared) = weak.upgrade() {
+                    let mut state = shared.borrow_mut();
+                    state.status.error = Some(error.to_string());
+                    state.changed = true;
+                }
+            }
+        });
+        Self { shared }
+    }
+    pub fn shutdown(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.shared.borrow_mut().quit = true;
+        None
+    }
+    pub fn request(&self, request: ViewRequest) {
+        self.shared.borrow_mut().request = request;
+    }
+    pub fn camera_layout(&self) -> (crate::CameraLayout, usize) {
+        let state = self.shared.borrow();
+        (state.request.layout, state.request.active_view)
+    }
+    pub fn set_visible(&self, visible: bool) {
+        self.shared.borrow_mut().status.visible = visible;
+    }
+    pub fn input(&self, event: gpui_nightshade::input::PointerInput) {
+        self.shared.borrow_mut().input.push(event);
+    }
+    pub fn cancel_input(&self) {
+        self.shared.borrow_mut().input.cancel();
+    }
+    pub fn presentation_status(&self) -> PresentationStatus {
+        self.shared.borrow().status.clone()
+    }
+    pub fn has_update(&self) -> bool {
+        self.shared.borrow().changed
+    }
+    pub fn paint_failed(&self, error: String) {
+        let mut state = self.shared.borrow_mut();
+        state.status.error = Some(error);
+        state.changed = true;
+    }
+    pub fn take(&self) -> (Option<ViewportFrame>, String) {
+        let mut state = self.shared.borrow_mut();
+        state.changed = false;
+        (
+            state.image.take(),
+            state
+                .status
+                .error
+                .clone()
+                .unwrap_or_else(|| state.diagnostics.clone()),
+        )
+    }
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.shared.borrow_mut().quit = true;
+    }
+}

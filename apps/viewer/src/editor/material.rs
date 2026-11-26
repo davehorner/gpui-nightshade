@@ -2,7 +2,7 @@ use super::*;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use nightshade_viewer_core::{ALPHA_LABELS, MaterialControl};
-use std::time::Instant;
+use web_time::Instant;
 
 pub(super) struct OpacityEditor {
     pub slider: Entity<SliderState>,

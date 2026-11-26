@@ -1,0 +1,3863 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 96196fe..0afd255 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4615,6 +4615,7 @@ name = "nightshade-app"
+ version = "0.1.0"
+ dependencies = [
+  "nightshade",
++ "nightshade-camera",
+  "nightshade-cli",
+  "nightshade-log",
+  "nightshade-platform",
+diff --git a/apps/viewer/src/commands/agent.rs b/apps/viewer/src/commands/agent.rs
+index 2cccd3c..9f44ffc 100644
+--- a/apps/viewer/src/commands/agent.rs
++++ b/apps/viewer/src/commands/agent.rs
+@@ -2,17 +2,17 @@ use std::sync::mpsc::{Receiver, Sender, channel};
+ 
+ use nightshade::prelude::*;
+ use nightshade_graphics::prelude::CommandQueues;
+-use nightshade_scene::contract::LocalTransform;
+ use serde_json::{Value, json};
+ 
+ use crate::commands::crew::{hire, hold_the_agent};
+ use crate::commands::files::route_drop;
+-use crate::commands::material::write_field;
++use crate::commands::material::edit_material;
+ use crate::data::{
+-    ALPHA_LABELS, CameraArgs, ClipArgs, EntityArgs, ExportArgs, GizmoArgs, GizmoMode, LayerArgs,
+-    LightArgs, LightField, LightWriteArgs, MaterialArgs, MaterialField, NameArgs, PageArgs,
+-    PathArgs, PrimitiveArgs, RenameArgs, RenderArgs, ScreenshotArgs, SelectArgs, SlugArgs,
+-    TransformArgs, ViewerAction, VisibleArgs,
++    ALPHA_LABELS, AnimationArgs, CameraArgs, ClipArgs, EntityArgs, ExportArgs, GizmoArgs,
++    GizmoMode, LayerArgs, LayerWeightArgs, LightArgs, LightField, LightWriteArgs, MaterialArgs,
++    MaterialField, MorphWeightArgs, NameArgs, PageArgs, PathArgs, PrimitiveArgs, RenameArgs,
++    RenderArgs, ScreenshotArgs, SelectArgs, SlugArgs, TransformArgs, TransformsArgs, ViewerAction,
++    VisibleArgs,
+ };
+ use crate::queries::agent::{
+     animation_state, json_header, library, light_kind, light_of, material_names, material_of,
+@@ -20,21 +20,34 @@ use crate::queries::agent::{
+     take_arguments, tool_list, transform_of, viewer_state,
+ };
+ use crate::queries::files::read_path;
+-use crate::queries::selection::euler_to_quat;
+ use crate::resources::{AgentChannel, Crew, Pending};
+ 
++const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
++const MAX_PENDING_CALLS: usize = 256;
++
+ pub fn take_pending(channel: &AgentChannel) -> Vec<Pending> {
++    let now = std::time::Instant::now();
+     channel
+         .pending
+         .lock()
+-        .map(|mut queue| std::mem::take(&mut *queue))
++        .map(|mut queue| {
++            std::mem::take(&mut *queue)
++                .into_iter()
++                .filter(|call| call.deadline > now)
++                .collect()
++        })
+         .unwrap_or_default()
+ }
+-
+-fn queue_pending(channel: &AgentChannel, pending: Pending) {
+-    if let Ok(mut queue) = channel.pending.lock() {
+-        queue.push(pending);
++fn queue_pending(channel: &AgentChannel, pending: Pending) -> Result<(), String> {
++    let mut queue = channel
++        .pending
++        .lock()
++        .map_err(|_| "the viewer queue is unavailable")?;
++    if queue.len() >= MAX_PENDING_CALLS {
++        return Err("the viewer tool queue is full".into());
+     }
++    queue.push(pending);
++    Ok(())
+ }
+ 
+ pub fn start_agent(crew: &mut Crew, port: u16) -> (AgentChannel, Option<String>) {
+@@ -80,9 +93,22 @@ pub fn start_agent(crew: &mut Crew, port: u16) -> (AgentChannel, Option<String>)
+ }
+ 
+ fn answer_message(queue: &AgentChannel, body: &str) -> Option<Value> {
+-    let message: Value = serde_json::from_str(body).ok()?;
++    let message: Value = match serde_json::from_str(body) {
++        Ok(message) => message,
++        Err(_) => return Some(rpc_error(None, -32700, "invalid JSON")),
++    };
+     let id = message.get("id").cloned();
+-    let method = message.get("method")?.as_str()?.to_string();
++    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
++        || !message.get("method").is_some_and(Value::is_string)
++        || id
++            .as_ref()
++            .is_some_and(|id| !id.is_string() && !id.is_number() && !id.is_null())
++    {
++        return Some(rpc_error(None, -32600, "invalid JSON-RPC request"));
++    }
++    let method = message["method"].as_str().unwrap().to_string();
++    // Notifications have no response and must not enqueue a tools/call mutation.
++    id.as_ref()?;
+     let params = message.get("params").cloned().unwrap_or(Value::Null);
+ 
+     match method.as_str() {
+@@ -105,30 +131,45 @@ fn queue_call(queue: &AgentChannel, id: Option<Value>, params: Value) -> Value {
+     let Some(name) = params.get("name").and_then(Value::as_str) else {
+         return rpc_error(id, -32602, "the call named no tool");
+     };
++    if !tool_list().iter().any(|tool| tool["name"] == name) {
++        return rpc_error(id, -32602, "no such tool");
++    }
+     let arguments = params
+         .get("arguments")
+         .cloned()
+         .unwrap_or_else(|| json!({}));
++    if !arguments.is_object() {
++        return rpc_error(id, -32602, "tool arguments must be an object");
++    }
+ 
+-    let (sender, receiver): (Sender<Value>, Receiver<Value>) = channel();
+-    queue_pending(
++    let (sender, receiver): (
++        Sender<Result<Value, String>>,
++        Receiver<Result<Value, String>>,
++    ) = channel();
++    if let Err(message) = queue_pending(
+         queue,
+         Pending {
+             name: name.to_string(),
+             arguments,
+             reply: sender,
++            deadline: std::time::Instant::now() + CALL_TIMEOUT,
+         },
+-    );
++    ) {
++        return rpc_error(id, -32000, &message);
++    }
+ 
+-    match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
+-        Ok(value) => rpc_result(
+-            id,
+-            json!({
+-                "content": [{ "type": "text", "text": value.to_string() }],
+-                "structuredContent": value,
+-                "isError": false,
+-            }),
+-        ),
++    match receiver.recv_timeout(CALL_TIMEOUT) {
++        Ok(result) => {
++            let is_error = result.is_err();
++            let value = result.unwrap_or_else(|message| json!({ "error": message }));
++            rpc_result(
++                id,
++                json!({
++                    "content": [{ "type": "text", "text": value.to_string() }],
++                    "structuredContent": value, "isError": is_error,
++                }),
++            )
++        }
+         Err(_) => rpc_error(id, -32000, "the viewer did not answer in time"),
+     }
+ }
+@@ -139,7 +180,143 @@ pub fn answer_call(
+     name: &str,
+     arguments: Value,
+ ) -> Result<Value, String> {
++    // File workers and dialogs do not yet carry correlated completion tokens.
++    // Never report their action-dispatch boundary as file completion.
++    let tracked = matches!(
++        name,
++        "select_entity"
++            | "delete_entity"
++            | "add_primitive"
++            | "add_light"
++            | "set_visible"
++            | "rename_entity"
++            | "isolate"
++            | "undo"
++            | "redo"
++            | "set_playback"
++            | "toggle_playback"
++            | "set_animation"
++            | "set_animation_layer_weight"
++            | "set_morph_weight"
++            | "play_clip"
++            | "stop_animation"
++            | "add_animation_layer"
++            | "remove_animation_layer"
++            | "set_render"
++            | "set_active_camera"
++            | "frame_model"
++    );
++    if !tracked {
++        return answer_call_inner(stage, storage, name, arguments);
++    }
++    let id = stage.viewer.operations.reserve(
++        name,
++        stage.viewer.history.frame,
++        arguments
++            .get("entity")
++            .and_then(Value::as_u64)
++            .and_then(|id| u32::try_from(id).ok()),
++    )?;
++    let start = stage.viewer.actions.len();
++    let mut targets = Vec::new();
++    if let Some(entity) = arguments
++        .get("entity")
++        .and_then(Value::as_u64)
++        .and_then(|id| u32::try_from(id).ok())
++        .and_then(|id| resolve(storage, id).ok())
++    {
++        targets.push(entity);
++    }
++    if matches!(
++        name,
++        "set_playback"
++            | "toggle_playback"
++            | "set_animation"
++            | "set_animation_layer_weight"
++            | "play_clip"
++            | "stop_animation"
++            | "add_animation_layer"
++            | "remove_animation_layer"
++    ) {
++        targets.extend(stage.viewer.model.roots.iter().copied());
++    }
++    match answer_call_inner(stage, storage, name, arguments) {
++        Ok(mut result) => {
++            let actions = stage.viewer.actions.split_off(start);
++            stage.viewer.actions.push(ViewerAction::AgentBatch {
++                operation_id: id.clone(),
++                actions,
++                targets,
++            });
++            result["operation_id"] = json!(id);
++            result["operation_status"] = json!("queued");
++            Ok(result)
++        }
++        Err(error) => {
++            stage.viewer.actions.truncate(start);
++            stage.viewer.operations.discard(&id);
++            Err(error)
++        }
++    }
++}
++
++fn answer_call_inner(
++    stage: &mut crate::resources::Stage<'_>,
++    storage: &mut nightshade::ecs::Storage,
++    name: &str,
++    arguments: Value,
++) -> Result<Value, String> {
++    if tool_list().iter().any(|tool| {
++        tool["name"] == name
++            && tool["inputSchema"]["properties"]
++                .as_object()
++                .is_some_and(|p| p.is_empty())
++    }) {
++        take_arguments::<crate::data::Empty>(arguments.clone())?;
++    }
+     match name {
++        "get_camera_views" => Ok(crate::camera_views::state(&stage.viewer.camera_views)),
++        "set_camera_views" => {
++            let args: crate::data::CameraViewsArgs = take_arguments(arguments)?;
++            crate::camera_views::enqueue(
++                stage.viewer,
++                crate::camera_views::CameraViewCommand::Layout {
++                    count: args.count,
++                    active: args.active,
++                },
++                name,
++            )
++        }
++        "focus_camera_view" => {
++            let args: crate::data::CameraViewIndexArgs = take_arguments(arguments)?;
++            crate::camera_views::enqueue(
++                stage.viewer,
++                crate::camera_views::CameraViewCommand::Focus { index: args.index },
++                name,
++            )
++        }
++        "set_view_camera" => {
++            let args: crate::data::ViewCameraArgs = take_arguments(arguments)?;
++            let camera = args.entity.map(|id| resolve(storage, id)).transpose()?;
++            if camera.is_some_and(|e| !storage.has::<nightshade_camera::components::Camera>(e)) {
++                return Err("that entity is not a camera".into());
++            }
++            crate::camera_views::enqueue(
++                stage.viewer,
++                crate::camera_views::CameraViewCommand::Assign {
++                    index: args.index,
++                    camera,
++                },
++                name,
++            )
++        }
++        "get_operation" => {
++            let args: crate::data::OperationArgs = take_arguments(arguments)?;
++            if args.operation_id.len() > 128 {
++                return Err("invalid operation ID".into());
++            }
++            stage.viewer.operations.get(&args.operation_id)
++        }
+         "get_viewer_state" => Ok(viewer_state(stage)),
+         "get_scene" => Ok(scene_state(stage)),
+         "get_stats" => Ok(stats_state(stage)),
+@@ -151,7 +328,7 @@ pub fn answer_call(
+             let args: SelectArgs = take_arguments(arguments)?;
+             let entity = args.entity.map(|id| resolve(storage, id)).transpose()?;
+             push_action(stage, ViewerAction::Select(entity));
+-            Ok(json!({ "selected": args.entity }))
++            Ok(json!({ "selected": args.entity, "queued": true }))
+         }
+         "get_transform" => {
+             let args: EntityArgs = take_arguments(arguments)?;
+@@ -161,9 +338,54 @@ pub fn answer_call(
+         "set_transform" => {
+             let args: TransformArgs = take_arguments(arguments)?;
+             let entity = resolve(storage, args.entity)?;
+-            write_transform(storage, entity, &args)?;
++            crate::commands::selection::edit_transform(
++                stage.viewer,
++                storage,
++                entity,
++                args.translation,
++                args.rotation,
++                args.scale,
++            )?;
+             transform_of(storage, entity)
+         }
++        "set_transforms" => {
++            let args: TransformsArgs = take_arguments(arguments)?;
++            if args.transforms.is_empty() || args.transforms.len() > 128 {
++                return Err("a transform batch must contain 1 to 128 entries".into());
++            }
++            let mut seen = std::collections::HashSet::new();
++            let mut targets = Vec::with_capacity(args.transforms.len());
++            for edit in &args.transforms {
++                if !seen.insert(edit.entity) {
++                    return Err("a transform batch cannot repeat an entity".into());
++                }
++                let entity = resolve(storage, edit.entity)?;
++                transform_of(storage, entity)?;
++                targets.push(entity);
++            }
++            let mut results = Vec::with_capacity(targets.len());
++            let mut history = Vec::new();
++            for (edit, entity) in args.transforms.into_iter().zip(targets) {
++                if let Some(change) = crate::commands::selection::update_transform(
++                    stage.viewer,
++                    storage,
++                    entity,
++                    edit.translation,
++                    edit.rotation,
++                    edit.scale,
++                )? {
++                    history.push(change);
++                }
++                results.push(transform_of(storage, entity)?);
++            }
++            if !history.is_empty() {
++                crate::commands::history::push(
++                    &mut stage.viewer.history,
++                    crate::resources::Edit::Transforms(history),
++                );
++            }
++            Ok(json!({"transforms": results}))
++        }
+         "get_material" => {
+             let args: EntityArgs = take_arguments(arguments)?;
+             let entity = resolve(storage, args.entity)?;
+@@ -180,7 +402,7 @@ pub fn answer_call(
+             let entity = resolve(storage, args.entity)?;
+             push_action(stage, ViewerAction::Select(Some(entity)));
+             push_action(stage, ViewerAction::DeleteSelected);
+-            Ok(json!({ "deleted": args.entity }))
++            Ok(json!({ "deleted": args.entity, "queued": true }))
+         }
+         "add_primitive" => {
+             let args: PrimitiveArgs = take_arguments(arguments)?;
+@@ -188,12 +410,12 @@ pub fn answer_call(
+                 stage,
+                 ViewerAction::AddPrimitive(primitive_kind(&args.kind)?),
+             );
+-            Ok(json!({ "added": args.kind }))
++            Ok(json!({ "added": args.kind, "queued": true }))
+         }
+         "add_light" => {
+             let args: LightArgs = take_arguments(arguments)?;
+             push_action(stage, ViewerAction::AddLight(light_kind(&args.kind)?));
+-            Ok(json!({ "added": args.kind }))
++            Ok(json!({ "added": args.kind, "queued": true }))
+         }
+         "load_file" => {
+             let args: PathArgs = take_arguments(arguments)?;
+@@ -202,19 +424,19 @@ pub fn answer_call(
+         "load_khronos" => {
+             let args: NameArgs = take_arguments(arguments)?;
+             push_action(stage, ViewerAction::LoadKhronos(args.name.clone()));
+-            Ok(json!({ "loading": args.name }))
++            Ok(json!({ "queued": true, "loading": args.name }))
+         }
+         "load_polyhaven_model" => {
+             let args: SlugArgs = take_arguments(arguments)?;
+             with_resolution(stage, args.resolution);
+             push_action(stage, ViewerAction::LoadPolyhavenModel(args.slug.clone()));
+-            Ok(json!({ "loading": args.slug }))
++            Ok(json!({ "queued": true, "loading": args.slug }))
+         }
+         "load_polyhaven_sky" => {
+             let args: SlugArgs = take_arguments(arguments)?;
+             with_resolution(stage, args.resolution);
+             push_action(stage, ViewerAction::LoadPolyhavenSky(args.slug.clone()));
+-            Ok(json!({ "loading": args.slug }))
++            Ok(json!({ "queued": true, "loading": args.slug }))
+         }
+         "list_library" => {
+             let args: PageArgs = take_arguments(arguments)?;
+@@ -226,13 +448,13 @@ pub fn answer_call(
+                 Some(path) => screenshot_to(stage, &path),
+                 None => {
+                     push_action(stage, ViewerAction::Screenshot);
+-                    Ok(json!({ "asking": true }))
++                    Ok(json!({ "queued": true, "asking": true }))
+                 }
+             }
+         }
+         "apply_clips" => {
+             push_action(stage, ViewerAction::ApplyHeldClips);
+-            Ok(json!({ "asking": true }))
++            Ok(json!({ "queued": true, "asking": true }))
+         }
+         "export_model" => {
+             let args: ExportArgs = take_arguments(arguments)?;
+@@ -240,7 +462,7 @@ pub fn answer_call(
+                 Some(path) => export_to(stage, storage, &path),
+                 None => {
+                     push_action(stage, ViewerAction::ExportModel);
+-                    Ok(json!({ "asking": true }))
++                    Ok(json!({ "queued": true, "asking": true }))
+                 }
+             }
+         }
+@@ -254,14 +476,14 @@ pub fn answer_call(
+                     visible: args.visible,
+                 },
+             );
+-            Ok(json!({ "entity": args.entity, "visible": args.visible }))
++            Ok(json!({ "entity": args.entity, "visible": args.visible, "queued": true }))
+         }
+         "rename_entity" => {
+             let args: RenameArgs = take_arguments(arguments)?;
+             let entity = resolve(storage, args.entity)?;
+             push_action(stage, ViewerAction::Select(Some(entity)));
+             push_action(stage, ViewerAction::Rename(args.name.clone()));
+-            Ok(json!({ "entity": args.entity, "name": args.name }))
++            Ok(json!({ "entity": args.entity, "name": args.name, "queued": true }))
+         }
+         "isolate" => {
+             let args: SelectArgs = take_arguments(arguments)?;
+@@ -278,7 +500,7 @@ pub fn answer_call(
+                 None if isolated.is_some() => push_action(stage, ViewerAction::ToggleIsolate),
+                 None => {}
+             }
+-            Ok(json!({ "isolated": args.entity }))
++            Ok(json!({ "isolated": args.entity, "queued": true }))
+         }
+         "get_light" => {
+             let args: EntityArgs = take_arguments(arguments)?;
+@@ -292,27 +514,132 @@ pub fn answer_call(
+             light_of(storage, entity)
+         }
+         "undo" => {
++            if stage.viewer.history.done.is_empty() {
++                return Err("there is no edit to undo".into());
++            }
+             push_action(stage, ViewerAction::Undo);
+-            Ok(json!({ "undone": true }))
++            Ok(json!({ "undone": true, "queued": true }))
+         }
+         "redo" => {
++            if stage.viewer.history.undone.is_empty() {
++                return Err("there is no edit to redo".into());
++            }
+             push_action(stage, ViewerAction::Redo);
+-            Ok(json!({ "redone": true }))
++            Ok(json!({ "redone": true, "queued": true }))
++        }
++        "set_playback" => {
++            let args: crate::data::PlaybackArgs = take_arguments(arguments)?;
++            if stage.viewer.model.clips.is_empty() {
++                return Err("there are no animation clips".into());
++            }
++            push_action(stage, ViewerAction::SetPlayback(args.playing));
++            Ok(json!({"queued": true}))
++        }
++        "toggle_playback" => {
++            if stage.viewer.model.clips.is_empty() {
++                return Err("there are no animation clips".into());
++            }
++            push_action(stage, ViewerAction::TogglePlayback);
++            Ok(json!({"queued": true}))
++        }
++        "set_animation" => {
++            let args: AnimationArgs = take_arguments(arguments)?;
++            if (args.time.is_some() || args.speed.is_some() || args.looping.is_some())
++                && stage.viewer.model.clips.is_empty()
++            {
++                return Err("there are no animation clips".into());
++            }
++            if args.time.is_some_and(|v| v < 0.0) || args.blend_time.is_some_and(|v| v < 0.0) {
++                return Err("animation times must be nonnegative".into());
++            }
++            if let Some(v) = args.time {
++                push_action(stage, ViewerAction::SeekAnimation(v));
++            }
++            if let Some(v) = args.speed {
++                push_action(stage, ViewerAction::SetAnimationSpeed(v));
++            }
++            if let Some(v) = args.looping {
++                push_action(stage, ViewerAction::SetAnimationLoop(v));
++            }
++            if let Some(v) = args.blend_time {
++                push_action(stage, ViewerAction::SetBlendTime(v));
++            }
++            Ok(json!({"queued": true}))
++        }
++        "set_animation_layer_weight" => {
++            let args: LayerWeightArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.animation.layers.len() {
++                return Err("there is no layer at that index".into());
++            }
++            if !(0.0..=1.0).contains(&args.weight) {
++                return Err("layer weight must be between zero and one".into());
++            }
++            push_action(
++                stage,
++                ViewerAction::SetLayerWeight {
++                    index: args.index,
++                    weight: args.weight,
++                },
++            );
++            Ok(json!({"queued": true}))
++        }
++        "get_morph_weights" | "set_morph_weight" => {
++            use nightshade_render::components::morph::MorphWeights;
++            let entity_id = if name == "get_morph_weights" {
++                take_arguments::<EntityArgs>(arguments.clone())?.entity
++            } else {
++                take_arguments::<MorphWeightArgs>(arguments.clone())?.entity
++            };
++            let entity = resolve(storage, entity_id)?;
++            let weights = storage
++                .get::<MorphWeights>(entity)
++                .ok_or("the node has no morph weights")?;
++            if name == "get_morph_weights" {
++                return Ok(json!({"entity": entity_id, "weights": weights.weights}));
++            }
++            let args: MorphWeightArgs = take_arguments(arguments)?;
++            if args.index >= weights.weights.len() {
++                return Err("there is no morph weight at that index".into());
++            }
++            if !(0.0..=1.0).contains(&args.weight) {
++                return Err("morph weight must be between zero and one".into());
++            }
++            push_action(
++                stage,
++                ViewerAction::SetMorphWeight {
++                    entity,
++                    index: args.index,
++                    weight: args.weight,
++                },
++            );
++            Ok(json!({"queued": true}))
+         }
+         "play_clip" => {
+             let args: ClipArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.model.clips.len() {
++                return Err("there is no clip at that index".into());
++            }
++            if args.blend_time.is_some_and(|time| time < 0.0) {
++                return Err("blend time must be nonnegative".into());
++            }
+             if let Some(time) = args.blend_time {
+                 push_action(stage, ViewerAction::SetBlendTime(time));
+             }
+             push_action(stage, ViewerAction::BlendToClip(args.index));
+-            Ok(json!({ "playing": args.index }))
++            Ok(json!({ "playing": args.index, "queued": true }))
+         }
+         "stop_animation" => {
+             push_action(stage, ViewerAction::StopAnimation);
+-            Ok(json!({ "stopped": true }))
++            Ok(json!({ "stopped": true, "queued": true }))
+         }
+         "add_animation_layer" => {
+             let args: LayerArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.model.clips.len() {
++                return Err("there is no clip at that index".into());
++            }
++            if args.weight.is_some_and(|w| !(0.0..=1.0).contains(&w)) {
++                return Err("layer weight must be between zero and one".into());
++            }
+             push_action(
+                 stage,
+                 ViewerAction::AddAnimationLayer {
+@@ -320,12 +647,15 @@ pub fn answer_call(
+                     weight: args.weight.unwrap_or(0.5),
+                 },
+             );
+-            Ok(json!({ "layered": args.index }))
++            Ok(json!({ "layered": args.index, "queued": true }))
+         }
+         "remove_animation_layer" => {
+             let args: LayerArgs = take_arguments(arguments)?;
++            if args.index >= stage.viewer.animation.layers.len() {
++                return Err("there is no layer at that index".into());
++            }
+             push_action(stage, ViewerAction::RemoveAnimationLayer(args.index));
+-            Ok(json!({ "removed": args.index }))
++            Ok(json!({ "removed": args.index, "queued": true }))
+         }
+         "set_handle_mode" => {
+             let args: GizmoArgs = take_arguments(arguments)?;
+@@ -334,17 +664,17 @@ pub fn answer_call(
+         "set_render" => {
+             let args: RenderArgs = take_arguments(arguments)?;
+             apply_render_arguments(stage, &args);
+-            Ok(viewer_state(stage))
++            Ok(json!({ "queued": true, "state_before": viewer_state(stage) }))
+         }
+         "set_active_camera" => {
+             let args: CameraArgs = take_arguments(arguments)?;
+             let entity = args.entity.map(|id| resolve(storage, id)).transpose()?;
+             push_action(stage, ViewerAction::SetActiveCamera(entity));
+-            Ok(json!({ "camera": args.entity }))
++            Ok(json!({ "camera": args.entity, "queued": true }))
+         }
+         "frame_model" => {
+             push_action(stage, ViewerAction::FrameModel);
+-            Ok(json!({ "framing": true }))
++            Ok(json!({ "framing": true, "queued": true }))
+         }
+         _ => Err(format!("there is no tool named {name}")),
+     }
+@@ -354,26 +684,6 @@ fn push_action(stage: &mut crate::resources::Stage<'_>, action: ViewerAction) {
+     stage.viewer.actions.push(action);
+ }
+ 
+-fn write_transform(
+-    storage: &mut nightshade::ecs::Storage,
+-    entity: Entity,
+-    args: &TransformArgs,
+-) -> Result<(), String> {
+-    let transform = storage
+-        .get_mut::<LocalTransform>(entity)
+-        .ok_or("that node carries no transform")?;
+-    if let Some(values) = args.translation {
+-        transform.translation = Vec3::new(values[0], values[1], values[2]);
+-    }
+-    if let Some(values) = args.rotation {
+-        transform.rotation = euler_to_quat(values);
+-    }
+-    if let Some(values) = args.scale {
+-        transform.scale = Vec3::new(values[0], values[1], values[2]);
+-    }
+-    Ok(())
+-}
+-
+ fn write_material(
+     stage: &mut crate::resources::Stage<'_>,
+     storage: &nightshade::ecs::Storage,
+@@ -432,17 +742,12 @@ fn write_material(
+         fields.push(MaterialField::AlphaMode(index));
+     }
+ 
+-    let registry = &mut *stage.materials;
+-    for field in fields {
+-        write_field(registry, &name, field);
+-    }
+-    stage.viewer.view.detail_dirty = true;
+-    Ok(())
++    edit_material(stage, &name, fields)
+ }
+ 
+ pub fn write_light(
+     stage: &mut crate::resources::Stage<'_>,
+-    storage: &nightshade::ecs::Storage,
++    storage: &mut nightshade::ecs::Storage,
+     entity: Entity,
+     args: &LightWriteArgs,
+ ) -> Result<(), String> {
+@@ -468,11 +773,7 @@ pub fn write_light(
+     if let Some(value) = args.cast_shadows {
+         fields.push(LightField::CastShadows(value));
+     }
+-    push_action(stage, ViewerAction::Select(Some(entity)));
+-    for field in fields {
+-        push_action(stage, ViewerAction::SetLightField(field));
+-    }
+-    Ok(())
++    crate::commands::selection::edit_light(stage.viewer, storage, entity, fields)
+ }
+ 
+ pub fn load_file(stage: &mut crate::resources::Stage<'_>, path: &str) -> Result<Value, String> {
+@@ -491,7 +792,7 @@ fn with_resolution(stage: &mut crate::resources::Stage<'_>, resolution: Option<u
+ 
+ fn screenshot_to(stage: &mut crate::resources::Stage<'_>, path: &str) -> Result<Value, String> {
+     write_screenshot(stage.queues, path);
+-    Ok(json!({ "writing": path }))
++    Ok(json!({ "queued": true, "writing": path }))
+ }
+ 
+ fn write_screenshot(queues: &mut CommandQueues, path: &str) {
+@@ -619,3 +920,83 @@ fn export_to(
+         "skins": scene.skins.len(),
+     }))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn protocol_rejects_invalid_calls_without_queueing() {
++        let queue = AgentChannel::default();
++        for (body, code) in [
++            ("{", -32700),
++            (r#"{"id":1,"method":"tools/list"}"#, -32600),
++            (
++                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"missing"}}"#,
++                -32602,
++            ),
++            (
++                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"undo","arguments":[]}}"#,
++                -32602,
++            ),
++        ] {
++            assert_eq!(answer_message(&queue, body).unwrap()["error"]["code"], code);
++        }
++        assert!(
++            answer_message(
++                &queue,
++                r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"undo"}}"#
++            )
++            .is_none()
++        );
++        assert!(take_pending(&queue).is_empty());
++    }
++
++    #[test]
++    fn execution_errors_and_success_have_distinct_envelopes() {
++        for (reply, expected) in [
++            (Err("invalid entity".to_string()), true),
++            (Ok(json!({"queued":true})), false),
++        ] {
++            let queue = AgentChannel::default();
++            let client_queue = queue.clone();
++            let client = std::thread::spawn(move || {
++                queue_call(&client_queue, Some(json!(7)), json!({"name":"undo"}))
++            });
++            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
++            let pending = loop {
++                if let Some(call) = take_pending(&queue).pop() {
++                    break call;
++                }
++                assert!(std::time::Instant::now() < deadline);
++                std::thread::yield_now();
++            };
++            pending.reply.send(reply).unwrap();
++            let result = client.join().unwrap();
++            assert_eq!(result["id"], 7);
++            assert_eq!(result["result"]["isError"], expected);
++            let text: Value =
++                serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap())
++                    .unwrap();
++            assert_eq!(text, result["result"]["structuredContent"]);
++        }
++    }
++
++    #[test]
++    fn expired_calls_are_discarded_and_queue_is_bounded() {
++        let queue = AgentChannel::default();
++        let make = |deadline| Pending {
++            name: "undo".into(),
++            arguments: json!({}),
++            reply: channel().0,
++            deadline,
++        };
++        queue_pending(&queue, make(std::time::Instant::now())).unwrap();
++        assert!(take_pending(&queue).is_empty());
++        for _ in 0..MAX_PENDING_CALLS {
++            queue_pending(&queue, make(std::time::Instant::now() + CALL_TIMEOUT)).unwrap();
++        }
++        assert!(queue_pending(&queue, make(std::time::Instant::now() + CALL_TIMEOUT)).is_err());
++        assert_eq!(take_pending(&queue).len(), MAX_PENDING_CALLS);
++    }
++}
+diff --git a/apps/viewer/src/commands/material.rs b/apps/viewer/src/commands/material.rs
+index 9373ed3..bfd0d0e 100644
+--- a/apps/viewer/src/commands/material.rs
++++ b/apps/viewer/src/commands/material.rs
+@@ -8,24 +8,39 @@ use crate::queries::material::{fields_of, find_material, view_of};
+ use crate::resources::{Edit, MaterialView, ViewerResources};
+ 
+ pub fn set_material_field(stage: &mut crate::resources::Stage<'_>, field: MaterialField) {
+-    let viewer = &mut *stage.viewer;
+-    let before = viewer.selection.material_values.clone();
+-    let mut values = before.clone();
+-    let name = viewer.selection.material.clone();
+-    apply_to_view(&mut values, field.clone());
+-    if let Some(name) = name {
+-        write_field(stage.materials, &name, field);
+-        let viewer = &mut *stage.viewer;
++    if let Some(name) = stage.viewer.selection.material.clone() {
++        let _ = edit_material(stage, &name, vec![field]);
++    }
++}
++
++/// Targeted registry mutation shared by UI and MCP, including clamping/history.
++pub fn edit_material(
++    stage: &mut crate::resources::Stage<'_>,
++    name: &str,
++    fields: Vec<MaterialField>,
++) -> Result<(), String> {
++    let before = crate::queries::material::view_by_name(stage.materials, name)
++        .ok_or("that material is not registered")?;
++    for field in fields {
++        write_field(stage.materials, name, field);
++    }
++    let after = crate::queries::material::view_by_name(stage.materials, name)
++        .ok_or("that material is not registered")?;
++    if before != after {
+         push(
+-            &mut viewer.history,
++            &mut stage.viewer.history,
+             Edit::Material {
+-                name,
++                name: name.to_string(),
+                 before,
+-                after: values.clone(),
++                after: after.clone(),
+             },
+         );
++        if stage.viewer.selection.material.as_deref() == Some(name) {
++            stage.viewer.selection.material_values = after;
++            stage.viewer.view.detail_dirty = true;
++        }
+     }
+-    stage.viewer.selection.material_values = values;
++    Ok(())
+ }
+ 
+ pub fn reset_material(stage: &mut crate::resources::Stage<'_>) {
+diff --git a/apps/viewer/src/commands/scene.rs b/apps/viewer/src/commands/scene.rs
+index 244fa7a..211fcee 100644
+--- a/apps/viewer/src/commands/scene.rs
++++ b/apps/viewer/src/commands/scene.rs
+@@ -257,18 +257,27 @@ pub fn isolate(
+ 
+ pub fn register_spawned(
+     stage: &mut crate::resources::Stage<'_>,
+-    storage: &mut nightshade::ecs::Storage,
++    commands: &mut Commands,
+     entity: Entity,
+ ) {
+-    {
+-        let viewer = &mut *stage.viewer;
++    stage.viewer.view.inspector_open = true;
++    stage.viewer.view.add_open = false;
++    // The entity and its components are still queued here. Read inspector state
++    // only after those commands have run, including the material assignment.
++    commands.queue(move |storage, resources| {
++        let mut viewer = resources
++            .remove::<ViewerResources>()
++            .expect("viewer resources");
+         viewer.model.entities.push(entity);
+-        viewer.view.inspector_open = true;
+-        viewer.view.add_open = false;
+-    }
+-    select_entity(stage, storage, Some(entity));
+-    let viewer = &mut *stage.viewer;
+-    build_rows(viewer, storage);
++        crate::commands::selection::select(&mut viewer, storage, Some(entity));
++        crate::commands::material::read_selected(
++            &mut viewer,
++            storage,
++            resources.res::<nightshade_graphics::prelude::MaterialRegistry>(),
++        );
++        build_rows(&mut viewer, storage);
++        resources.insert(viewer);
++    });
+ }
+ 
+ pub fn apply_variant(
+diff --git a/apps/viewer/src/commands/selection.rs b/apps/viewer/src/commands/selection.rs
+index eb07fce..bda09b5 100644
+--- a/apps/viewer/src/commands/selection.rs
++++ b/apps/viewer/src/commands/selection.rs
+@@ -48,24 +48,58 @@ pub fn set_light_field(
+     storage: &mut nightshade::ecs::Storage,
+     field: LightField,
+ ) {
+-    let (Some(entity), Some(before)) = (viewer.selection.selected, viewer.selection.light.clone())
+-    else {
+-        return;
+-    };
++    if let Some(entity) = viewer.selection.selected {
++        let _ = edit_light(viewer, storage, entity, vec![field]);
++    }
++}
++
++/// Apply one light edit atomically through the same history as the inspector.
++pub fn edit_light(
++    viewer: &mut ViewerResources,
++    storage: &mut nightshade::ecs::Storage,
++    entity: Entity,
++    fields: Vec<LightField>,
++) -> Result<(), String> {
++    let light = storage
++        .get_mut::<Light>(entity)
++        .ok_or("that node carries no light")?;
++    let before = light_view(light);
+     let mut after = before.clone();
+-    apply_light_field(&mut after, field);
+-    if let Some(light) = storage.get_mut::<Light>(entity) {
++    for field in fields {
++        apply_light_field(&mut after, field);
++    }
++    if after
++        .color
++        .iter()
++        .chain(
++            [
++                after.intensity,
++                after.range,
++                after.inner_cone,
++                after.outer_cone,
++            ]
++            .iter(),
++        )
++        .any(|v| !v.is_finite())
++    {
++        return Err("light values must be finite".into());
++    }
++    if before != after {
+         write_light(light, &after);
++        if viewer.selection.selected == Some(entity) {
++            viewer.selection.light = Some(after.clone());
++            viewer.view.detail_dirty = true;
++        }
++        push(
++            &mut viewer.history,
++            Edit::Light {
++                entity,
++                before,
++                after,
++            },
++        );
+     }
+-    viewer.selection.light = Some(after.clone());
+-    push(
+-        &mut viewer.history,
+-        Edit::Light {
+-            entity,
+-            before,
+-            after,
+-        },
+-    );
++    Ok(())
+ }
+ 
+ pub fn set_camera_field(
+@@ -152,33 +186,70 @@ pub fn apply_transform(viewer: &mut ViewerResources, storage: &mut nightshade::e
+     let Some(entity) = viewer.selection.selected else {
+         return;
+     };
+-    let Some(transform) = storage.get_mut::<LocalTransform>(entity) else {
+-        return;
+-    };
+-    let before = snapshot(transform);
+-    transform.translation = Vec3::new(
+-        viewer.selection.translation[0],
+-        viewer.selection.translation[1],
+-        viewer.selection.translation[2],
++    let _ = edit_transform(
++        viewer,
++        storage,
++        entity,
++        Some(viewer.selection.translation),
++        Some(viewer.selection.rotation),
++        Some(viewer.selection.scale),
+     );
+-    transform.rotation = euler_to_quat(viewer.selection.rotation);
+-    transform.scale = Vec3::new(
+-        viewer.selection.scale[0],
+-        viewer.selection.scale[1],
+-        viewer.selection.scale[2],
+-    );
+-    viewer.selection.rotation_quat = transform.rotation;
++}
++
++/// Shared targeted edit path for the inspector and MCP. Does not change selection.
++pub fn edit_transform(
++    viewer: &mut ViewerResources,
++    storage: &mut nightshade::ecs::Storage,
++    entity: Entity,
++    translation: Option<[f32; 3]>,
++    rotation: Option<[f32; 3]>,
++    scale: Option<[f32; 3]>,
++) -> Result<(), String> {
++    if let Some(edit) = update_transform(viewer, storage, entity, translation, rotation, scale)? {
++        push(&mut viewer.history, Edit::Transforms(vec![edit]));
++    }
++    Ok(())
++}
++
++/// Validated transform mutation; lets callers group edits into one history entry.
++pub fn update_transform(
++    viewer: &mut ViewerResources,
++    storage: &mut nightshade::ecs::Storage,
++    entity: Entity,
++    translation: Option<[f32; 3]>,
++    rotation: Option<[f32; 3]>,
++    scale: Option<[f32; 3]>,
++) -> Result<Option<TransformEdit>, String> {
++    if [translation, rotation, scale]
++        .into_iter()
++        .flatten()
++        .flatten()
++        .any(|v| !v.is_finite())
++    {
++        return Err("transform values must be finite".into());
++    }
++    let transform = storage
++        .get_mut::<LocalTransform>(entity)
++        .ok_or("that node carries no transform")?;
++    let before = snapshot(transform);
++    if let Some(v) = translation {
++        transform.translation = Vec3::from(v);
++    }
++    if let Some(v) = rotation {
++        transform.rotation = euler_to_quat(v);
++    }
++    if let Some(v) = scale {
++        transform.scale = Vec3::from(v);
++    }
+     let after = snapshot(transform);
+-    if before != after {
+-        push(
+-            &mut viewer.history,
+-            Edit::Transforms(vec![TransformEdit {
+-                entity,
+-                before,
+-                after,
+-            }]),
+-        );
++    if viewer.selection.selected == Some(entity) {
++        read_transform(&mut viewer.selection, transform);
+     }
++    Ok((before != after).then_some(TransformEdit {
++        entity,
++        before,
++        after,
++    }))
+ }
+ 
+ pub fn restore_transform(
+diff --git a/apps/viewer/src/commands/spawn.rs b/apps/viewer/src/commands/spawn.rs
+index cc3d711..cffa89b 100644
+--- a/apps/viewer/src/commands/spawn.rs
++++ b/apps/viewer/src/commands/spawn.rs
+@@ -16,7 +16,7 @@ pub fn add_primitive_at_focus(
+ ) {
+     let position = orbit_focus(active_camera, storage);
+     let entity = add_primitive(commands, position, kind);
+-    register_spawned(stage, storage, entity);
++    register_spawned(stage, commands, entity);
+ }
+ 
+ pub fn add_light_at_focus(
+@@ -28,7 +28,7 @@ pub fn add_light_at_focus(
+ ) {
+     let position = orbit_focus(active_camera, storage);
+     let entity = add_light(commands, stage.materials, position, kind);
+-    register_spawned(stage, storage, entity);
++    register_spawned(stage, commands, entity);
+ }
+ 
+ pub fn add_primitive(commands: &mut Commands, position: Vec3, kind: PrimitiveKind) -> Entity {
+diff --git a/apps/viewer/src/data.rs b/apps/viewer/src/data.rs
+index 32ffa9e..53b4320 100644
+--- a/apps/viewer/src/data.rs
++++ b/apps/viewer/src/data.rs
+@@ -60,6 +60,13 @@ pub struct ModelFiles {
+ 
+ #[derive(Clone, Debug, PartialEq)]
+ pub enum ViewerAction {
++    #[cfg(not(target_arch = "wasm32"))]
++    AgentBatch {
++        operation_id: String,
++        actions: Vec<ViewerAction>,
++        targets: Vec<Entity>,
++    },
++    SetPlayback(bool),
+     ToggleScenePanel,
+     ToggleInspectorPanel,
+     OpenAddMenu,
+@@ -77,6 +84,7 @@ pub enum ViewerAction {
+     CloseBrowser,
+     SetBrowserTab(BrowserTab),
+     SetBrowserPage(usize),
++    SetBrowserSearch(String),
+     SetResolution(u32),
+     RandomModel,
+     RandomSky,
+@@ -584,22 +592,26 @@ pub const DEFAULT_PORT: u16 = 8791;
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct Empty {}
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct EntityArgs {
+     pub entity: u32,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct SelectArgs {
+     pub entity: Option<u32>,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct TransformArgs {
+     pub entity: u32,
+     pub translation: Option<[f32; 3]>,
+@@ -609,6 +621,14 @@ pub struct TransformArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct TransformsArgs {
++    pub transforms: Vec<TransformArgs>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct MaterialArgs {
+     pub entity: u32,
+     pub base_color: Option<[f32; 4]>,
+@@ -627,30 +647,35 @@ pub struct MaterialArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct PrimitiveArgs {
+     pub kind: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct LightArgs {
+     pub kind: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct PathArgs {
+     pub path: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct NameArgs {
+     pub name: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct SlugArgs {
+     pub slug: String,
+     pub resolution: Option<u32>,
+@@ -658,6 +683,7 @@ pub struct SlugArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct ClipArgs {
+     pub index: usize,
+     pub blend_time: Option<f32>,
+@@ -665,6 +691,7 @@ pub struct ClipArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct LayerArgs {
+     pub index: usize,
+     pub weight: Option<f32>,
+@@ -672,12 +699,41 @@ pub struct LayerArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct AnimationArgs {
++    pub time: Option<f32>,
++    pub speed: Option<f32>,
++    pub looping: Option<bool>,
++    pub blend_time: Option<f32>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct LayerWeightArgs {
++    pub index: usize,
++    pub weight: f32,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct MorphWeightArgs {
++    pub entity: u32,
++    pub index: usize,
++    pub weight: f32,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct GizmoArgs {
+     pub mode: String,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct RenderArgs {
+     pub exposure: Option<f32>,
+     pub tonemap: Option<usize>,
+@@ -706,6 +762,7 @@ pub struct RenderArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct VisibleArgs {
+     pub entity: u32,
+     pub visible: bool,
+@@ -713,6 +770,7 @@ pub struct VisibleArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct RenameArgs {
+     pub entity: u32,
+     pub name: String,
+@@ -720,6 +778,7 @@ pub struct RenameArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct LightWriteArgs {
+     pub entity: u32,
+     pub color: Option<[f32; 3]>,
+@@ -732,6 +791,7 @@ pub struct LightWriteArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct PageArgs {
+     pub tab: String,
+     pub search: Option<String>,
+@@ -740,18 +800,58 @@ pub struct PageArgs {
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct PlaybackArgs {
++    pub playing: bool,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct OperationArgs {
++    pub operation_id: String,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct ScreenshotArgs {
+     pub path: Option<String>,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct ExportArgs {
+     pub path: Option<String>,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct CameraViewsArgs {
++    pub count: u32,
++    pub active: Option<usize>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct CameraViewIndexArgs {
++    pub index: usize,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
++pub struct ViewCameraArgs {
++    pub index: usize,
++    pub entity: Option<u32>,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, Default, Deserialize, enum2schema::Schema)]
++#[serde(deny_unknown_fields)]
+ pub struct CameraArgs {
+     pub entity: Option<u32>,
+ }
+diff --git a/apps/viewer/src/lib.rs b/apps/viewer/src/lib.rs
+index a79ef92..999c38b 100644
+--- a/apps/viewer/src/lib.rs
++++ b/apps/viewer/src/lib.rs
+@@ -1,3 +1,7 @@
++#[cfg(not(target_arch = "wasm32"))]
++mod operations;
++mod camera_views;
++pub mod core;
+ mod commands;
+ mod components;
+ mod data;
+@@ -7,7 +11,7 @@ mod resources;
+ mod systems;
+ mod theme;
+ 
+-use plugin::ViewerPlugin;
++pub use plugin::{ViewerPlugin,ViewerCorePlugin,NativeViewerUiPlugin};
+ use resources::ViewerArguments;
+ 
+ pub fn launch() -> Result<(), Box<dyn std::error::Error>> {
+diff --git a/apps/viewer/src/plugin.rs b/apps/viewer/src/plugin.rs
+index 39e3a74..9391488 100644
+--- a/apps/viewer/src/plugin.rs
++++ b/apps/viewer/src/plugin.rs
+@@ -1,43 +1,64 @@
+-use nightshade::prelude::*;
+-use nightshade_platform::prelude::*;
+-
+ use crate::resources::{ViewerArguments, ViewerResources};
+ use crate::systems;
++use nightshade::prelude::*;
++use nightshade_platform::prelude::*;
+ 
++/// The original native viewer composition, retaining all frontend systems.
+ pub struct ViewerPlugin;
+-
+ impl Plugin for ViewerPlugin {
++    fn build(&self, app: &mut App) {
++        app.add_plugin(ViewerCorePlugin::default())
++            .add_plugin(NativeViewerUiPlugin);
++    }
++}
++
++/// Scene/action/asset/agent systems usable without retained-mode UI resources.
++pub struct ViewerCorePlugin {
++    pub persist_settings: bool,
++    pub remote_catalogs: bool,
++}
++impl Default for ViewerCorePlugin {
++    fn default() -> Self {
++        Self {
++            persist_settings: true,
++            remote_catalogs: true,
++        }
++    }
++}
++impl Plugin for ViewerCorePlugin {
+     fn build(&self, app: &mut App) {
+         app.world.res_mut::<Window>().title = "Nightshade Viewer".to_string();
+         if app.world.res::<ViewerArguments>().preview {
+             app.world.res_mut::<Window>().start_hidden = true;
+         }
+         app.insert_resource(ViewerResources::default());
++        app.insert_resource(crate::core::FrontendInput::default());
+         #[cfg(not(target_arch = "wasm32"))]
+         compose_agent(app);
+         app.add_system(Stage::Startup, systems::setup::initialize);
+-        app.add_system(Stage::Startup, systems::settings::load_settings);
+-        app.add_system(Stage::Startup, systems::interface::build_ui);
++        if self.persist_settings {
++            app.add_system(Stage::Startup, systems::settings::load_settings);
++        }
++        app.add_system(Stage::Update, crate::core::advance_history);
+         app.add_system(
+             Stage::Update,
+             (
+-                systems::input::handle_events,
+-                systems::interface::relayout,
+-                systems::poll::poll_ui,
+                 systems::gizmo::update_gizmo,
+                 systems::picking::request_pick,
+                 systems::picking::apply_pick,
+                 systems::actions::apply_actions,
+-                systems::browsers::ensure_indices,
+-                systems::browsers::watch_library,
+-                systems::browsers::poll_browsers,
+-                systems::load::poll_load,
+-                systems::load::place_the_model,
+             ),
+         );
++        if self.remote_catalogs {
++            app.add_system(Stage::Update, systems::browsers::ensure_indices);
++        }
+         app.add_system(
+             Stage::Update,
+             (
++                systems::browsers::watch_library,
++                systems::browsers::announce_indices,
++                systems::load::poll_load,
++                systems::load::place_the_model,
+                 systems::load::flush_report,
+                 systems::camera::update_camera,
+                 systems::animation::mirror_animation,
+@@ -47,17 +68,182 @@ impl Plugin for ViewerPlugin {
+                 systems::markers::draw_markers,
+                 systems::textures::apply_texture_drop,
+                 systems::skeleton::update_skeleton,
+-                systems::previews::upload_previews,
+             ),
+         );
+-        app.add_system(Stage::Update, systems::library::draw_previews);
+         app.add_system(Stage::Update, systems::library::hold_preview_capture);
+-        app.add_system(Stage::Update, systems::lists::rebuild_lists);
+-        app.add_system(Stage::Update, systems::refresh::refresh_ui);
+-        app.add_system(Stage::Update, systems::nav_gizmo::draw_nav_gizmo);
+-        app.add_system(Stage::Update, systems::settings::save_settings);
++        if self.persist_settings {
++            app.add_system(Stage::Update, systems::settings::save_settings);
++        }
++        #[cfg(not(target_arch = "wasm32"))]
++        app.add_system(Stage::Update, systems::agent::finish_operations);
++        let schedule = app.stages.stage_mut(Stage::Update.name());
++        #[cfg(not(target_arch = "wasm32"))]
++        schedule.order(
++            std::any::type_name_of_val(&systems::library::hold_preview_capture),
++            std::any::type_name_of_val(&systems::agent::finish_operations),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&crate::core::advance_history),
++            std::any::type_name_of_val(&systems::gizmo::update_gizmo),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::gizmo::update_gizmo),
++            std::any::type_name_of_val(&systems::picking::request_pick),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::picking::request_pick),
++            std::any::type_name_of_val(&systems::picking::apply_pick),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::picking::apply_pick),
++            std::any::type_name_of_val(&systems::actions::apply_actions),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::actions::apply_actions),
++            std::any::type_name_of_val(&systems::browsers::watch_library),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::browsers::watch_library),
++            std::any::type_name_of_val(&systems::browsers::announce_indices),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::browsers::announce_indices),
++            std::any::type_name_of_val(&systems::load::poll_load),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::load::poll_load),
++            std::any::type_name_of_val(&systems::load::place_the_model),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::load::place_the_model),
++            std::any::type_name_of_val(&systems::load::flush_report),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::load::flush_report),
++            std::any::type_name_of_val(&systems::camera::update_camera),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::camera::update_camera),
++            std::any::type_name_of_val(&systems::animation::mirror_animation),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::animation::mirror_animation),
++            std::any::type_name_of_val(&systems::selection::refresh_selection),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::selection::refresh_selection),
++            std::any::type_name_of_val(&systems::selection::sync_outline),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::selection::sync_outline),
++            std::any::type_name_of_val(&systems::picking::draw_hover),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::picking::draw_hover),
++            std::any::type_name_of_val(&systems::markers::draw_markers),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::markers::draw_markers),
++            std::any::type_name_of_val(&systems::textures::apply_texture_drop),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::textures::apply_texture_drop),
++            std::any::type_name_of_val(&systems::skeleton::update_skeleton),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::skeleton::update_skeleton),
++            std::any::type_name_of_val(&systems::library::hold_preview_capture),
++        );
++        schedule.order(
++            std::any::type_name_of_val(&systems::library::hold_preview_capture),
++            std::any::type_name_of_val(&systems::settings::save_settings),
++        );
++    }
++}
++
++/// Retained-mode native frontend; attach after ViewerCorePlugin and UiPlugin.
++pub struct NativeViewerUiPlugin;
++impl Plugin for NativeViewerUiPlugin {
++    fn build(&self, app: &mut App) {
++        app.add_system(Stage::Startup, native_preview_visibility);
++        app.add_system(Stage::Startup, systems::interface::build_ui);
++        app.add_system(
++            Stage::Update,
++            (
++                systems::input::handle_events,
++                systems::interface::relayout,
++                systems::poll::poll_ui,
++                native_pointer_capture,
++                systems::browsers::poll_browsers,
++                systems::previews::upload_previews,
++                systems::library::draw_previews,
++                systems::lists::rebuild_lists,
++                systems::refresh::refresh_ui,
++                systems::nav_gizmo::draw_nav_gizmo,
++            ),
++        );
++        let schedule = app.stages.stage_mut(Stage::Update.name());
++        macro_rules! order {
++            ($a:path,$b:path) => {
++                schedule.order(
++                    std::any::type_name_of_val(&$a),
++                    std::any::type_name_of_val(&$b),
++                );
++            };
++        }
++        order!(systems::input::handle_events, systems::interface::relayout);
++        order!(systems::interface::relayout, systems::poll::poll_ui);
++        order!(systems::poll::poll_ui, native_pointer_capture);
++        order!(native_pointer_capture, systems::gizmo::update_gizmo);
++        order!(
++            systems::browsers::announce_indices,
++            systems::browsers::poll_browsers
++        );
++        order!(systems::browsers::poll_browsers, systems::load::poll_load);
++        order!(
++            systems::skeleton::update_skeleton,
++            systems::previews::upload_previews
++        );
++        order!(
++            systems::previews::upload_previews,
++            systems::library::draw_previews
++        );
++        order!(
++            systems::library::draw_previews,
++            systems::library::hold_preview_capture
++        );
++        order!(
++            systems::library::hold_preview_capture,
++            systems::lists::rebuild_lists
++        );
++        order!(systems::lists::rebuild_lists, systems::refresh::refresh_ui);
++        order!(
++            systems::refresh::refresh_ui,
++            systems::nav_gizmo::draw_nav_gizmo
++        );
++        order!(
++            systems::nav_gizmo::draw_nav_gizmo,
++            systems::settings::save_settings
++        );
++    }
++}
++fn native_preview_visibility(
++    arguments: Res<ViewerArguments>,
++    mut runtime: ResMut<nightshade_ui::resources::RetainedUiRuntime>,
++) {
++    if arguments.preview {
++        runtime.visible = false;
+     }
+ }
++fn native_pointer_capture(
++    runtime: Res<nightshade_ui::resources::RetainedUiRuntime>,
++    interaction: Res<nightshade_ui::resources::RetainedUiInteraction>,
++    mut input: ResMut<crate::core::FrontendInput>,
++    storage: &mut nightshade::ecs::Storage,
++) {
++    input.pointer_over_ui =
++        nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage).is_some();
++}
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ fn compose_agent(app: &mut App) {
+diff --git a/apps/viewer/src/queries/agent.rs b/apps/viewer/src/queries/agent.rs
+index 0a9aed3..dc24585 100644
+--- a/apps/viewer/src/queries/agent.rs
++++ b/apps/viewer/src/queries/agent.rs
+@@ -4,10 +4,11 @@ use serde::de::DeserializeOwned;
+ use serde_json::{Value, json};
+ 
+ use crate::data::{
+-    ALPHA_LABELS, BrowserTab, CameraArgs, ClipArgs, Empty, EntityArgs, ExportArgs, GizmoArgs,
+-    GizmoMode, LIGHT_KIND_LABELS, LayerArgs, LightArgs, LightKind, LightWriteArgs, MaterialArgs,
+-    NameArgs, PageArgs, PathArgs, PrimitiveArgs, PrimitiveKind, RenameArgs, RenderArgs, RowKind,
+-    ScreenshotArgs, SelectArgs, SlugArgs, TransformArgs, VisibleArgs,
++    ALPHA_LABELS, AnimationArgs, BrowserTab, CameraArgs, ClipArgs, Empty, EntityArgs, ExportArgs,
++    GizmoArgs, GizmoMode, LIGHT_KIND_LABELS, LayerArgs, LayerWeightArgs, LightArgs, LightKind,
++    LightWriteArgs, MaterialArgs, MorphWeightArgs, NameArgs, PageArgs, PathArgs, PrimitiveArgs,
++    PrimitiveKind, RenameArgs, RenderArgs, RowKind, ScreenshotArgs, SelectArgs, SlugArgs,
++    TransformArgs, TransformsArgs, VisibleArgs,
+ };
+ use crate::queries::material::view_by_name;
+ use crate::queries::picking::find_entity_by_id;
+@@ -30,6 +31,11 @@ pub fn rpc_error(id: Option<Value>, code: i32, message: &str) -> Value {
+ pub fn tool_list() -> Vec<Value> {
+     use enum2schema::mcp::tool;
+     vec![
++        tool::<Empty>("get_camera_views", "Read frontend shared-camera support, layout count, zero-based active tile, camera entity IDs and physical output rectangles."),
++        tool::<crate::data::CameraViewsArgs>("set_camera_views", "Set one, two or four camera tiles sharing the same scene. Optional active index is zero-based. Returns a tracked scene-application operation."),
++        tool::<crate::data::CameraViewIndexArgs>("focus_camera_view", "Focus a visible camera tile by zero-based index for navigation and framing."),
++        tool::<crate::data::ViewCameraArgs>("set_view_camera", "Assign an existing camera entity to a visible tile. Omit entity for the persistent editor camera. Reusing a camera already in another tile swaps their assignments."),
++        tool::<crate::data::OperationArgs>("get_operation", "Read queued scene-edit application status and its post-edit state. Applied means native scene actions ran, not that a GPU frame was presented. IDs expire when bounded history is evicted or the viewer restarts."),
+         tool::<Empty>(
+             "get_viewer_state",
+             "Read which panels are open, the render settings, the handle mode, and the camera in use.",
+@@ -58,6 +64,10 @@ pub fn tool_list() -> Vec<Value> {
+             "set_transform",
+             "Write a node's position, rotation in degrees, or scale. What is left out is not changed.",
+         ),
++        tool::<TransformsArgs>(
++            "set_transforms",
++            "Apply 1 to 128 node transforms in one scene stage. Validates the entire batch before editing; duplicate targets are rejected. Returns post-edit transforms and shares inspector undo history.",
++        ),
+         tool::<EntityArgs>(
+             "get_material",
+             "Read the material of a node, and the textures it names.",
+@@ -122,6 +132,12 @@ pub fn tool_list() -> Vec<Value> {
+             "get_animation",
+             "Read the clips, which one is playing, and the layers over it.",
+         ),
++        tool::<crate::data::PlaybackArgs>("set_playback", "Set animation playback explicitly. Repeating the same desired state does not toggle it."),
++        tool::<Empty>("toggle_playback", "Pause or resume animation playback."),
++        tool::<AnimationArgs>("set_animation", "Queue animation time, speed, looping, or blend duration changes."),
++        tool::<LayerWeightArgs>("set_animation_layer_weight", "Set a layer weight between zero and one."),
++        tool::<EntityArgs>("get_morph_weights", "Read the morph weights carried by a node."),
++        tool::<MorphWeightArgs>("set_morph_weight", "Queue a morph weight between zero and one."),
+         tool::<ClipArgs>(
+             "play_clip",
+             "Play a clip, blending into it over the time given.",
+@@ -154,15 +170,32 @@ pub fn tool_list() -> Vec<Value> {
+             "frame_model",
+             "Move the camera until the whole model is in view.",
+         ),
+-    ]
++    ].into_iter().map(|mut tool| {
++        tool["inputSchema"]["additionalProperties"] = json!(false);
++        tool
++    }).collect()
+ }
+ 
+-pub fn take_arguments<T: DeserializeOwned + Default>(arguments: Value) -> Result<T, String> {
+-    if arguments.is_null() {
+-        return Ok(T::default());
++pub fn take_arguments<T: DeserializeOwned>(arguments: Value) -> Result<T, String> {
++    fn representable(value: &Value) -> bool {
++        match value {
++            Value::Number(n) => n
++                .as_f64()
++                .is_some_and(|n| n.is_finite() && n.abs() <= f32::MAX as f64),
++            Value::Array(items) => items.iter().all(representable),
++            Value::Object(fields) => fields.values().all(representable),
++            _ => true,
++        }
++    }
++    if !representable(&arguments) {
++        return Err("numeric arguments must fit finite 32-bit values".into());
+     }
+-    serde_json::from_value(arguments)
+-        .map_err(|error| format!("those arguments do not fit: {error}"))
++    serde_json::from_value(if arguments.is_null() {
++        json!({})
++    } else {
++        arguments
++    })
++    .map_err(|error| format!("those arguments do not fit: {error}"))
+ }
+ 
+ pub fn resolve(storage: &nightshade::ecs::Storage, id: u32) -> Result<Entity, String> {
+@@ -374,6 +407,14 @@ pub fn material_of(
+         "specular": values.specular,
+         "transmission": values.transmission,
+         "thickness": values.thickness,
++        "normal_scale": values.normal_scale,
++        "occlusion_strength": values.occlusion_strength,
++        "dispersion": values.dispersion,
++        "clearcoat": values.clearcoat,
++        "clearcoat_roughness": values.clearcoat_roughness,
++        "sheen_roughness": values.sheen_roughness,
++        "iridescence": values.iridescence,
++        "iridescence_ior": values.iridescence_ior,
+         "textures": values
+             .textures
+             .iter()
+@@ -450,3 +491,30 @@ pub fn browser_tab(name: &str) -> Result<BrowserTab, String> {
+         _ => Err("the tab must be library, khronos, models, or skies".to_string()),
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn argument_contract_rejects_missing_unknown_and_overflowing_values() {
++        assert!(take_arguments::<EntityArgs>(Value::Null).is_err());
++        assert!(take_arguments::<EntityArgs>(json!({"entity":1,"typo":2})).is_err());
++        assert!(take_arguments::<TransformArgs>(json!({"entity":1,"scale":[1e100,1,1]})).is_err());
++        assert!(take_arguments::<LayerWeightArgs>(json!({"index":0})).is_err());
++        assert!(take_arguments::<Empty>(json!({"typo":1})).is_err());
++        let tools = tool_list();
++        for tool in &tools {
++            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
++        }
++        for name in [
++            "set_animation",
++            "toggle_playback",
++            "set_animation_layer_weight",
++            "get_morph_weights",
++            "set_morph_weight",
++        ] {
++            assert!(tools.iter().any(|tool| tool["name"] == name));
++        }
++    }
++}
+diff --git a/apps/viewer/src/queries/material.rs b/apps/viewer/src/queries/material.rs
+index a44943e..4628dce 100644
+--- a/apps/viewer/src/queries/material.rs
++++ b/apps/viewer/src/queries/material.rs
+@@ -4,7 +4,6 @@ use nightshade_render::data::material::{AlphaMode, Material};
+ use crate::data::{MaterialField, TextureSlot};
+ use crate::resources::MaterialView;
+ 
+-#[cfg(not(target_arch = "wasm32"))]
+ pub fn view_by_name(registry: &MaterialRegistry, name: &str) -> Option<MaterialView> {
+     find_material(registry, name).map(view_of)
+ }
+diff --git a/apps/viewer/src/resources.rs b/apps/viewer/src/resources.rs
+index 4068f0f..e875204 100644
+--- a/apps/viewer/src/resources.rs
++++ b/apps/viewer/src/resources.rs
+@@ -89,6 +89,7 @@ impl Default for Sun {
+     }
+ }
+ 
++#[derive(Clone)]
+ pub struct Selection {
+     pub selected: Option<Entity>,
+     pub others: Vec<Entity>,
+@@ -422,6 +423,7 @@ impl Default for Browsers {
+     }
+ }
+ 
++#[derive(Clone)]
+ pub struct BrowserEntry {
+     pub label: String,
+     pub key: String,
+@@ -609,6 +611,7 @@ pub struct LayerView {
+     pub weight: f32,
+ }
+ 
++#[derive(Clone)]
+ pub struct AnimationView {
+     pub clip: Option<usize>,
+     pub playing: bool,
+@@ -637,7 +640,7 @@ impl Default for AnimationView {
+     }
+ }
+ 
+-#[derive(clap::Args, Default)]
++#[derive(clap::Args, Default, Clone)]
+ pub struct ViewerArguments {
+     #[arg(
+         long,
+@@ -994,6 +997,10 @@ pub struct ViewerResources {
+     pub gizmo: Gizmo,
+     pub view: ViewState,
+     pub animation: AnimationView,
++    #[cfg(not(target_arch = "wasm32"))]
++    pub operations: crate::operations::Operations,
++    pub camera_views: crate::camera_views::CameraViews,
++    pub camera_view_requests: Vec<crate::camera_views::CameraViewRequest>,
+     pub actions: Vec<ViewerAction>,
+     pub handles: UiHandles,
+     pub layout: Layout,
+@@ -1005,7 +1012,8 @@ pub struct ViewerResources {
+ pub struct Pending {
+     pub name: String,
+     pub arguments: serde_json::Value,
+-    pub reply: std::sync::mpsc::Sender<serde_json::Value>,
++    pub reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
++    pub deadline: std::time::Instant,
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+@@ -1038,7 +1046,6 @@ nightshade::ecs::resource_bundle! {
+             hierarchy: nightshade::ecs::HierarchyIndex,
+             entities: nightshade_scene::resources::entity_registry::EntityRegistry,
+             loading: nightshade_gltf::Loading,
+-            runtime: nightshade_ui::resources::RetainedUiRuntime,
+         }
+         read {
+             arguments: ViewerArguments,
+diff --git a/apps/viewer/src/systems/actions.rs b/apps/viewer/src/systems/actions.rs
+index da34f77..3a5f185 100644
+--- a/apps/viewer/src/systems/actions.rs
++++ b/apps/viewer/src/systems/actions.rs
+@@ -51,6 +51,30 @@ fn apply_action(
+     let active_camera = stage.active_camera.0;
+ 
+     match action {
++        #[cfg(not(target_arch = "wasm32"))]
++        ViewerAction::AgentBatch {
++            operation_id,
++            actions,
++            targets,
++        } => {
++            if targets.iter().any(|e| !storage.is_alive(*e)) {
++                stage.viewer.operations.finish(
++                    &operation_id,
++                    stage.viewer.history.frame,
++                    Err("an operation target no longer exists".into()),
++                );
++                return;
++            }
++            for action in actions {
++                apply_action(stage, storage, commands, action);
++            }
++            stage.viewer.operations.dispatched(&operation_id);
++        }
++        ViewerAction::SetPlayback(playing) => {
++            if stage.viewer.animation.playing != playing {
++                toggle_playback(stage, storage);
++            }
++        }
+         ViewerAction::ToggleScenePanel => {
+             let viewer = &mut *stage.viewer;
+             let narrow = viewer.layout.narrow;
+@@ -95,6 +119,11 @@ fn apply_action(
+             viewer.view.browser_dirty = true;
+             viewer.browsers.reset_thumbnails |= changed;
+         }
++        ViewerAction::SetBrowserSearch(query) => {
++            stage.viewer.view.search = query;
++            stage.viewer.view.browser_page = 0;
++            stage.viewer.view.browser_dirty = true;
++        }
+         ViewerAction::SetBrowserPage(page) => {
+             let viewer = &mut *stage.viewer;
+             let last = viewer
+diff --git a/apps/viewer/src/systems/agent.rs b/apps/viewer/src/systems/agent.rs
+index c797e2e..5e21457 100644
+--- a/apps/viewer/src/systems/agent.rs
++++ b/apps/viewer/src/systems/agent.rs
+@@ -1,5 +1,3 @@
+-use serde_json::json;
+-
+ use crate::commands::agent::{answer_call, take_pending};
+ use crate::resources::AgentChannel;
+ 
+@@ -11,12 +9,46 @@ pub fn serve(
+     let channel = channel.clone();
+     for pending in take_pending(&channel) {
+         let answer = answer_call(&mut stage, storage, &pending.name, pending.arguments);
+-        let value = match answer {
+-            Ok(value) => value,
+-            Err(message) => json!({ "error": message }),
+-        };
+-        if pending.reply.send(value).is_err() {
++        if pending.reply.send(answer).is_err() {
++            continue;
++        }
++    }
++}
++
++pub fn finish_operations(stage: crate::resources::Stage, storage: &mut nightshade::ecs::Storage) {
++    let ready = stage.viewer.operations.ready();
++    for (id, tool, target) in ready {
++        if tool == "set_morph_weight" {
++            let result = target
++                .ok_or_else(|| "operation target is missing".to_string())
++                .and_then(|id| crate::queries::agent::resolve(storage, id))
++                .and_then(|entity| {
++                    storage
++                        .get::<nightshade_render::components::morph::MorphWeights>(entity)
++                        .map(|w| serde_json::json!({"entity": entity.id, "weights": w.weights}))
++                        .ok_or_else(|| "the node has no morph weights".to_string())
++                });
++            stage
++                .viewer
++                .operations
++                .finish(&id, stage.viewer.history.frame, result);
+             continue;
+         }
++        let result = match tool.as_str() {
++            "set_playback"
++            | "toggle_playback"
++            | "set_animation"
++            | "set_animation_layer_weight"
++            | "play_clip"
++            | "stop_animation"
++            | "add_animation_layer"
++            | "remove_animation_layer" => crate::queries::agent::animation_state(&stage),
++            "add_primitive" | "add_light" | "delete_entity" | "rename_entity" | "set_visible"
++            | "isolate" => crate::queries::agent::scene_state(&stage),
++            "select_entity" | "undo" | "redo" => crate::queries::agent::selection_state(&stage),
++            _ => crate::queries::agent::viewer_state(&stage),
++        };
++        let tick = stage.viewer.history.frame;
++        stage.viewer.operations.finish(&id, tick, Ok(result));
+     }
+ }
+diff --git a/apps/viewer/src/systems/browsers.rs b/apps/viewer/src/systems/browsers.rs
+index 031ad9e..d867b5f 100644
+--- a/apps/viewer/src/systems/browsers.rs
++++ b/apps/viewer/src/systems/browsers.rs
+@@ -48,21 +48,7 @@ pub fn watch_library(mut viewer: ResMut<ViewerResources>) {
+ pub fn poll_browsers(mut viewer: ResMut<ViewerResources>, mut build: UiBuild<'_>) {
+     let viewer = &mut *viewer;
+ 
+-    for (index, ready) in [
+-        index_ready(&viewer.browsers.khronos),
+-        index_ready(&viewer.browsers.models),
+-        index_ready(&viewer.browsers.skies),
+-    ]
+-    .into_iter()
+-    .enumerate()
+-    {
+-        if ready && !viewer.browsers.announced[index] {
+-            viewer.browsers.announced[index] = true;
+-            if viewer.view.browser.map(browser_tab_index) == Some(index) {
+-                viewer.view.browser_dirty = true;
+-            }
+-        }
+-    }
++    announce(viewer);
+ 
+     if std::mem::take(&mut viewer.browsers.reset_thumbnails) {
+         let context = build.context();
+@@ -125,3 +111,24 @@ pub fn poll_browsers(mut viewer: ResMut<ViewerResources>, mut build: UiBuild<'_>
+         viewer.view.browser_dirty = true;
+     }
+ }
++
++pub fn announce_indices(mut viewer: ResMut<ViewerResources>) {
++    announce(&mut viewer);
++}
++fn announce(viewer: &mut ViewerResources) {
++    for (index, ready) in [
++        index_ready(&viewer.browsers.khronos),
++        index_ready(&viewer.browsers.models),
++        index_ready(&viewer.browsers.skies),
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        if ready && !viewer.browsers.announced[index] {
++            viewer.browsers.announced[index] = true;
++            if viewer.view.browser.map(browser_tab_index) == Some(index) {
++                viewer.view.browser_dirty = true;
++            }
++        }
++    }
++}
+diff --git a/apps/viewer/src/systems/gizmo.rs b/apps/viewer/src/systems/gizmo.rs
+index eaad5e2..45f98aa 100644
+--- a/apps/viewer/src/systems/gizmo.rs
++++ b/apps/viewer/src/systems/gizmo.rs
+@@ -6,7 +6,7 @@ use nightshade_platform::prelude::Input;
+ use nightshade_platform::winit::keyboard::KeyCode;
+ use nightshade_render::resources::viewport::Viewport;
+ use nightshade_scene::contract::GlobalTransform;
+-use nightshade_ui::resources::{RetainedUiInteraction, RetainedUiRuntime};
++
+ 
+ use crate::commands::gizmo::{
+     claim, continue_drag, draw_handles, end_drag, hide_handles, start_drag,
+@@ -23,8 +23,7 @@ pub fn update_gizmo(
+     window: Res<Window>,
+     viewport: Res<Viewport>,
+     active_camera: Res<ActiveCamera>,
+-    runtime: Res<RetainedUiRuntime>,
+-    interaction: Res<RetainedUiInteraction>,
++    frontend: Res<crate::core::FrontendInput>,
+     mut capture: ResMut<nightshade_platform::contract::input_capture::InputCapture>,
+     mut commands: Commands,
+     storage: &mut nightshade::ecs::Storage,
+@@ -73,7 +72,7 @@ pub fn update_gizmo(
+         || input.keyboard.is_key_pressed(KeyCode::ControlRight);
+ 
+     let over_interface =
+-        nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage).is_some();
++        frontend.pointer_over_ui;
+ 
+     if viewer.gizmo.drag.is_some() {
+         if input.mouse.state.contains(MouseState::LEFT_JUST_RELEASED) {
+diff --git a/apps/viewer/src/systems/input.rs b/apps/viewer/src/systems/input.rs
+index e133d45..c18dfdc 100644
+--- a/apps/viewer/src/systems/input.rs
++++ b/apps/viewer/src/systems/input.rs
+@@ -23,7 +23,6 @@ pub fn handle_events(
+     storage: &mut nightshade::ecs::Storage,
+ ) {
+     let viewer = &mut *viewer;
+-    viewer.history.frame += 1;
+     let under_pointer = nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage);
+     let texture_row = under_pointer.and_then(|target| {
+         viewer
+diff --git a/apps/viewer/src/systems/picking.rs b/apps/viewer/src/systems/picking.rs
+index 80816ad..2245668 100644
+--- a/apps/viewer/src/systems/picking.rs
++++ b/apps/viewer/src/systems/picking.rs
+@@ -7,7 +7,7 @@ use nightshade_render::components::lines::{Line, Lines};
+ use nightshade_render::prelude::*;
+ use nightshade_scene::contract::GlobalTransform;
+ use nightshade_scene::contract::primitives::{Name, Visibility};
+-use nightshade_ui::resources::{RetainedUiInteraction, RetainedUiRuntime};
++
+ 
+ use crate::commands::picking::{cycle_select, reset_cycle};
+ use crate::data::{PICK_PATIENCE, PickKind, ViewerAction};
+@@ -26,13 +26,11 @@ pub fn request_pick(
+     window: Res<nightshade_platform::contract::window::Window>,
+     viewport: Res<Viewport>,
+     settings: Res<RenderSettings>,
+-    runtime: Res<RetainedUiRuntime>,
+-    interaction: Res<RetainedUiInteraction>,
+-    storage: &mut nightshade::ecs::Storage,
++    frontend: Res<crate::core::FrontendInput>,
++    _storage: &mut nightshade::ecs::Storage,
+ ) {
+     let viewer = &mut *viewer;
+-    let over_interface = nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage)
+-        .is_some()
++    let over_interface = frontend.pointer_over_ui
+         || viewer.gizmo.hovered.is_some()
+         || viewer.gizmo.drag.is_some();
+     let position = input.mouse.position;
+diff --git a/apps/viewer/src/systems/settings.rs b/apps/viewer/src/systems/settings.rs
+index a8764b2..4baa78d 100644
+--- a/apps/viewer/src/systems/settings.rs
++++ b/apps/viewer/src/systems/settings.rs
+@@ -22,9 +22,6 @@ pub fn load_settings(mut stage_state: crate::resources::Stage) {
+         read_settings().unwrap_or_default()
+     };
+     apply_settings(stage, &settings);
+-    if preview {
+-        stage.runtime.visible = false;
+-    }
+     let viewer = &mut *stage.viewer;
+     viewer.settings = settings;
+     viewer.settings_delay = 0;
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/lib.rs b/crates/plugins/compose/nightshade-wgpu/src/lib.rs
+index 2ccb648..aa711b4 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/lib.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/lib.rs
+@@ -52,6 +52,7 @@ pub mod backend {
+     pub use crate::renderer::wgpu::placeholder;
+     pub use crate::renderer::wgpu::placeholder::{placeholder_depth_texture, placeholder_texture};
+     pub use crate::renderer::wgpu::presentation::install_presentation_passes;
++    pub use crate::renderer::wgpu::picking::{poll_depth_pick, DepthPickReadback};
+     pub use crate::renderer::wgpu::render_configs::{
+         CameraFrameInputs, CameraProjectionParams, RenderInputs, SingleViewHost, ViewFrame,
+         compose_single_view, restore_single_view,
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs
+index 9f4c6cc..f7d743f 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu.rs
+@@ -19,6 +19,7 @@ pub mod picking;
+ pub mod presentation;
+ pub mod render_configs;
+ mod surface;
++mod external_output;
+ pub mod texture_uploads;
+ pub mod timing;
+ pub(crate) mod view;
+@@ -68,6 +69,8 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+ 
+ pub struct WgpuRenderer {
+     pub surface: Option<wgpu::Surface<'static>>,
++    /// Owned handle retained until a replacement output is installed.
++    pub external_output: Option<wgpu::Texture>,
+     pub instance: Option<wgpu::Instance>,
+     pub device: wgpu::Device,
+     pub queue: wgpu::Queue,
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/external_output.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/external_output.rs
+new file mode 100644
+index 0000000..dd25c88
+--- /dev/null
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/external_output.rs
+@@ -0,0 +1,69 @@
++use super::{WgpuRenderer, rendergraph::render_graph_set_external_texture};
++
++impl WgpuRenderer {
++    /// Allocate a GPU output, retaining all normal scene and presentation passes.
++    pub fn set_owned_output(
++        &mut self,
++        width: u32,
++        height: u32,
++    ) -> Result<(), Box<dyn std::error::Error>> {
++        if width == 0
++            || height == 0
++            || width > self.device.limits().max_texture_dimension_2d
++            || height > self.device.limits().max_texture_dimension_2d
++        {
++            return Err("output dimensions exceed device limits or are zero".into());
++        }
++        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
++            label: Some("Nightshade external output"),
++            size: wgpu::Extent3d {
++                width,
++                height,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format: self.surface_format,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
++                | wgpu::TextureUsages::COPY_SRC
++                | wgpu::TextureUsages::TEXTURE_BINDING,
++            view_formats: &[],
++        });
++        self.set_external_output(texture)
++    }
++
++    /// The caller must allocate on this renderer's device. wgpu validates device identity.
++    /// Holding a cloned texture handle retains the resource through submitted GPU work.
++    pub fn set_external_output(
++        &mut self,
++        texture: wgpu::Texture,
++    ) -> Result<(), Box<dyn std::error::Error>> {
++        if self.surface.is_some() {
++            return Err("release the native surface before attaching an external output".into());
++        }
++        if texture.format() != self.surface_format
++            || texture.dimension() != wgpu::TextureDimension::D2
++            || texture.mip_level_count() != 1
++            || texture.sample_count() != 1
++            || texture.depth_or_array_layers() != 1
++            || !texture
++                .usage()
++                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
++        {
++            return Err("incompatible external output".into());
++        }
++        self.resize_surface(texture.width(), texture.height())?;
++        let view = texture.create_view(&Default::default());
++        render_graph_set_external_texture(
++            &mut self.graph,
++            self.targets.swapchain,
++            Some(texture.clone()),
++            view,
++            texture.width(),
++            texture.height(),
++        );
++        self.external_output = Some(texture);
++        Ok(())
++    }
++}
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs
+index 06431a5..df46cb2 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/frame.rs
+@@ -178,7 +178,7 @@ fn run_frame(
+     run_frame_inputs_hooks(hooks, renderer, inputs);
+ 
+     let surface_texture = presentation::acquire_surface_frame(renderer);
+-    let has_surface = surface_texture.is_some();
++    let has_surface = surface_texture.is_some() || renderer.external_output.is_some();
+     if !has_surface && inputs.frame.cameras.is_empty() {
+         return Ok(());
+     }
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
+index 0026da3..c34ed03 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/initialization.rs
+@@ -59,7 +59,13 @@ pub fn negotiate_device_config(
+ ) -> DeviceConfig {
+     let mut required_features = wgpu::Features::INDIRECT_FIRST_INSTANCE;
+ 
+-    if adapter_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT) {
++    // wgpu 29's DX12 count-buffer indirect path resets the emulated vertex /
++    // instance base constants to zero. Mesh morph lookup and instance selection
++    // require those built-ins to include their indirect base offsets. Use the
++    // validated non-count indirect path until the backend supports them here.
++    if adapter_info.backend != wgpu::Backend::Dx12
++        && adapter_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
++    {
+         required_features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+     }
+ 
+@@ -213,6 +219,78 @@ impl super::WgpuRenderer {
+         bindless_config: crate::renderer::wgpu::caps::BindlessConfig,
+         initial_width: u32,
+         initial_height: u32,
++    ) -> Result<Self, Box<dyn std::error::Error>> {
++        Self::new_with_optional_surface(
++            adapter,
++            device,
++            queue,
++            Some(surface),
++            surface_format,
++            bindless_config,
++            initial_width,
++            initial_height,
++        )
++        .await
++    }
++
++    /// Creates a renderer without allocating a window or native surface.
++    pub async fn new_headless(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
++        Self::new_headless_with_backends(
++            width,
++            height,
++            wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends,
++        )
++        .await
++    }
++
++    pub async fn new_headless_with_backends(
++        width: u32,
++        height: u32,
++        backends: wgpu::Backends,
++    ) -> Result<Self, Box<dyn std::error::Error>> {
++        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
++        descriptor.backends = backends;
++        let instance = wgpu::Instance::new(descriptor);
++        let adapter = instance
++            .request_adapter(&wgpu::RequestAdapterOptions {
++                compatible_surface: None,
++                ..Default::default()
++            })
++            .await?;
++        let config =
++            negotiate_device_config(adapter.features(), &adapter.limits(), &adapter.get_info());
++        let (device, queue) = adapter
++            .request_device(&wgpu::DeviceDescriptor {
++                required_features: config.required_features,
++                required_limits: config.required_limits,
++                ..Default::default()
++            })
++            .await?;
++        let mut renderer = Self::new_with_optional_surface(
++            &adapter,
++            device,
++            queue,
++            None,
++            wgpu::TextureFormat::Bgra8Unorm,
++            config.bindless,
++            width.max(1),
++            height.max(1),
++        )
++        .await?;
++        renderer.instance = Some(instance);
++        renderer.set_owned_output(width.max(1), height.max(1))?;
++        Ok(renderer)
++    }
++
++    async fn new_with_optional_surface(
++        adapter: &wgpu::Adapter,
++        device: wgpu::Device,
++        queue: wgpu::Queue,
++        surface: Option<wgpu::Surface<'static>>,
++        surface_format: wgpu::TextureFormat,
++        bindless_config: crate::renderer::wgpu::caps::BindlessConfig,
++        initial_width: u32,
++        initial_height: u32,
+     ) -> Result<Self, Box<dyn std::error::Error>> {
+         let adapter_info = adapter.get_info();
+ 
+@@ -230,7 +308,15 @@ impl super::WgpuRenderer {
+             gpu_profile.device_type
+         );
+ 
+-        let surface_capabilities = surface.get_capabilities(adapter);
++        let surface_capabilities = surface
++            .as_ref()
++            .map(|surface| surface.get_capabilities(adapter))
++            .unwrap_or(wgpu::SurfaceCapabilities {
++                formats: vec![surface_format],
++                present_modes: vec![wgpu::PresentMode::Fifo],
++                alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
++                usages: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
++            });
+         if surface_capabilities.formats.is_empty() {
+             return Err(
+                 "the selected adapter cannot present to this surface: no supported formats".into(),
+@@ -275,7 +361,9 @@ impl super::WgpuRenderer {
+             desired_maximum_frame_latency: 2,
+         };
+ 
+-        surface.configure(&device, &surface_config);
++        if let Some(surface) = surface.as_ref() {
++            surface.configure(&device, &surface_config);
++        }
+ 
+         let shader_composer = ShaderComposer::new();
+         let point_shadow_format = pick_texture_format(
+@@ -748,7 +836,8 @@ impl super::WgpuRenderer {
+         let timing = crate::renderer::wgpu::timing::GpuTiming::new(&device, &queue);
+ 
+         Ok(Self {
+-            surface: Some(surface),
++            surface,
++            external_output: None,
+             instance: None,
+             device,
+             queue,
+@@ -840,3 +929,43 @@ fn build_gpu_profile(info: &wgpu::AdapterInfo) -> crate::renderer::config::GpuPr
+         name: info.name.clone(),
+     }
+ }
++
++#[cfg(test)]
++mod indirect_feature_tests {
++    use super::*;
++    #[test]
++    fn dx12_uses_offset_correct_indirect_draws_without_changing_vulkan_features() {
++        let mut info = wgpu::AdapterInfo {
++            name: "test".into(),
++            vendor: 0,
++            device: 0,
++            device_type: wgpu::DeviceType::Other,
++            device_pci_bus_id: String::new(),
++            driver: String::new(),
++            driver_info: String::new(),
++            backend: wgpu::Backend::Dx12,
++            subgroup_min_size: 0,
++            subgroup_max_size: 0,
++            transient_saves_memory: false,
++        };
++        let features =
++            wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
++        let dx12 = negotiate_device_config(features, &wgpu::Limits::default(), &info);
++        assert!(
++            dx12.required_features
++                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
++        );
++        assert!(
++            !dx12
++                .required_features
++                .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
++        );
++        info.backend = wgpu::Backend::Vulkan;
++        let vulkan = negotiate_device_config(features, &wgpu::Limits::default(), &info);
++        assert!(
++            vulkan
++                .required_features
++                .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
++        );
++    }
++}
+diff --git a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs
+index 94a1c7c..9b08c0e 100644
+--- a/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs
++++ b/crates/plugins/compose/nightshade-wgpu/src/renderer/wgpu/surface.rs
+@@ -50,6 +50,7 @@ impl WgpuRenderer {
+         self.surface_config.width = width.max(1);
+         self.surface_config.height = height.max(1);
+         surface.configure(&self.device, &self.surface_config);
++        self.external_output = None;
+         self.surface = Some(surface);
+         self.resize_render_buffers(width.max(1), height.max(1));
+ 
+diff --git a/crates/plugins/draw/nightshade-app/Cargo.toml b/crates/plugins/draw/nightshade-app/Cargo.toml
+index 61b5734..59985ce 100644
+--- a/crates/plugins/draw/nightshade-app/Cargo.toml
++++ b/crates/plugins/draw/nightshade-app/Cargo.toml
+@@ -7,6 +7,7 @@ license.workspace = true
+ publish = false
+ 
+ [dependencies]
++nightshade-camera.workspace = true
+ nightshade = { workspace = true }
+ nightshade-cli = { workspace = true }
+ nightshade-log = { workspace = true }
+diff --git a/crates/plugins/draw/nightshade-app/src/commands.rs b/crates/plugins/draw/nightshade-app/src/commands.rs
+index 66fa786..57ef676 100644
+--- a/crates/plugins/draw/nightshade-app/src/commands.rs
++++ b/crates/plugins/draw/nightshade-app/src/commands.rs
+@@ -50,6 +50,35 @@ where
+             }),
+     );
+ 
++    finish(app, opening)
++}
++
++/// Compose the same native renderer/plugin stack without parsing process arguments or starting an event loop.
++pub fn compose_embedded<A: Send + Sync + 'static>(opening: Opening, arguments: A) -> App {
++    let mut app = App::new();
++    app.add_plugin(nightshade_window::WindowPlugin {
++        title: opening.title.to_string(),
++        size: opening.size,
++    });
++    app.add_plugin(nightshade_log::LogPlugin {
++        title: Some(opening.title.to_string()),
++        ..Default::default()
++    });
++    #[cfg(feature = "wgpu")]
++    app.add_plugin(nightshade_wgpu::RenderPlugin {
++        vsync: opening.vsync,
++        frame_rate_limit: opening.frame_rate_limit,
++    });
++    #[cfg(feature = "vulkan")]
++    app.add_plugin(nightshade_vulkan::RenderPlugin {
++        vsync: opening.vsync,
++        frame_rate_limit: opening.frame_rate_limit,
++    });
++    app.add_plugin(nightshade_camera::CameraPlugin);
++    app.insert_resource(arguments);
++    finish(app, opening)
++}
++fn finish(mut app: App, opening: Opening) -> App {
+     #[cfg(feature = "wgpu")]
+     app.add_plugin(nightshade_wgpu_shading::ShadingPlugin);
+     #[cfg(feature = "wgpu")]
+diff --git a/crates/plugins/draw/nightshade-wgpu-debug/src/systems/lines.rs b/crates/plugins/draw/nightshade-wgpu-debug/src/systems/lines.rs
+index c189e8a..e08e701 100644
+--- a/crates/plugins/draw/nightshade-wgpu-debug/src/systems/lines.rs
++++ b/crates/plugins/draw/nightshade-wgpu-debug/src/systems/lines.rs
+@@ -160,6 +160,7 @@ impl From<&nightshade_render::data::config::RenderNormal> for GpuNormalData {
+ }
+ 
+ pub struct LinesPass {
++    supports_indirect_count: bool,
+     culling_enabled: bool,
+     vertex_buffer: wgpu::Buffer,
+     index_buffer: wgpu::Buffer,
+@@ -492,6 +493,9 @@ impl LinesPass {
+         );
+ 
+         Self {
++            supports_indirect_count: device
++                .features()
++                .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT),
+             culling_enabled: false,
+             vertex_buffer,
+             index_buffer,
+@@ -887,7 +891,7 @@ impl LinesPass {
+         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+ 
+         if culling_enabled {
+-            if cfg!(target_os = "macos") || cfg!(target_arch = "wasm32") {
++            if !self.supports_indirect_count {
+                 render_pass.multi_draw_indexed_indirect(&self.draw_commands_buffer, 0, total_lines);
+             } else {
+                 render_pass.multi_draw_indexed_indirect_count(
+diff --git a/apps/viewer/src/camera_views.rs b/apps/viewer/src/camera_views.rs
+new file mode 100644
+index 0000000..0f07841
+--- /dev/null
++++ b/apps/viewer/src/camera_views.rs
+@@ -0,0 +1,113 @@
++//! Frontend-owned camera tiles exposed through the existing viewer endpoint.
++use nightshade::{World, ecs::Entity};
++use serde_json::{Value, json};
++
++#[derive(Clone, Debug)]
++pub struct CameraTile {
++    pub index: usize,
++    pub camera: Entity,
++    /// Physical output pixels: x, y, width, height.
++    pub rect: [u32; 4],
++}
++
++#[derive(Clone, Debug, Default)]
++pub struct CameraViews {
++    pub supported: bool,
++    pub count: u32,
++    pub active: usize,
++    pub width: u32,
++    pub height: u32,
++    pub tiles: Vec<CameraTile>,
++}
++
++#[derive(Clone, Debug)]
++pub enum CameraViewCommand {
++    Layout {
++        count: u32,
++        active: Option<usize>,
++    },
++    Focus {
++        index: usize,
++    },
++    Assign {
++        index: usize,
++        camera: Option<Entity>,
++    },
++}
++
++pub struct CameraViewRequest {
++    pub operation_id: String,
++    pub command: CameraViewCommand,
++}
++
++pub(crate) fn state(views: &CameraViews) -> Value {
++    json!({"supported":views.supported, "count":views.count, "active":views.active,
++        "width":views.width, "height":views.height,
++        "tiles":views.tiles.iter().map(|t| json!({"index":t.index,"camera":t.camera.id,
++            "rect":{"x":t.rect[0],"y":t.rect[1],"width":t.rect[2],"height":t.rect[3]}})).collect::<Vec<_>>()})
++}
++
++pub fn publish_camera_views(world: &mut World, views: CameraViews) {
++    world
++        .res_mut::<crate::resources::ViewerResources>()
++        .camera_views = views;
++}
++
++pub fn camera_views(world: &World) -> CameraViews {
++    world
++        .res::<crate::resources::ViewerResources>()
++        .camera_views
++        .clone()
++}
++
++pub fn take_camera_view_requests(world: &mut World) -> Vec<CameraViewRequest> {
++    std::mem::take(
++        &mut world
++            .res_mut::<crate::resources::ViewerResources>()
++            .camera_view_requests,
++    )
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) fn enqueue(
++    viewer: &mut crate::resources::ViewerResources,
++    command: CameraViewCommand,
++    tool: &str,
++) -> Result<Value, String> {
++    if !viewer.camera_views.supported {
++        return Err("this frontend does not support shared camera tiles".into());
++    }
++    match command {
++        CameraViewCommand::Layout { count, active } => {
++            if !matches!(count, 1 | 2 | 4) {
++                return Err("camera count must be 1, 2 or 4".into());
++            }
++            if active.is_some_and(|i| i >= count as usize) {
++                return Err("active tile is outside the requested layout".into());
++            }
++        }
++        CameraViewCommand::Focus { index } | CameraViewCommand::Assign { index, .. } => {
++            if index >= viewer.camera_views.tiles.len() {
++                return Err("there is no visible tile at that index".into());
++            }
++        }
++    }
++    if viewer.camera_view_requests.len() >= 128 {
++        return Err("the camera view request queue is full".into());
++    }
++    let id = viewer
++        .operations
++        .reserve(tool, viewer.history.frame, None)?;
++    viewer.camera_view_requests.push(CameraViewRequest {
++        operation_id: id.clone(),
++        command,
++    });
++    Ok(json!({"queued":true,"operation_id":id,"operation_status":"queued"}))
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++pub fn finish_camera_view_request(world: &mut World, id: &str, result: Result<(), String>) {
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    let result = result.map(|()| state(&viewer.camera_views));
++    viewer.operations.finish(id, viewer.history.frame, result);
++}
+diff --git a/apps/viewer/src/core.rs b/apps/viewer/src/core.rs
+new file mode 100644
+index 0000000..6c8b436
+--- /dev/null
++++ b/apps/viewer/src/core.rs
+@@ -0,0 +1,1097 @@
++//! Frontend-neutral access to the trunk viewer dispatcher and owned state snapshots.
++#[cfg(not(target_arch = "wasm32"))]
++pub use crate::camera_views::finish_camera_view_request;
++pub use crate::camera_views::{
++    CameraTile, CameraViewCommand, CameraViewRequest, CameraViews, camera_views,
++    publish_camera_views, take_camera_view_requests,
++};
++pub use crate::data::*;
++pub use crate::plugin::ViewerCorePlugin;
++pub use crate::resources::{
++    AnimationView, BrowserEntry, ClipInfo, LayerView, MaterialView, ModelStats, MorphInfo,
++    SceneRow, Selection, ViewerArguments,
++};
++pub use nightshade::prelude::Entity as SceneEntity;
++use nightshade::prelude::*;
++
++#[derive(Default)]
++pub struct FrontendInput {
++    pub pointer_over_ui: bool,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum BrowserStatus {
++    Idle,
++    Loading,
++    Ready,
++    Failed,
++}
++#[derive(Clone)]
++pub struct BrowserSnapshot {
++    pub tab: BrowserTab,
++    pub query: String,
++    pub page: usize,
++    pub pages: usize,
++    pub status: BrowserStatus,
++    pub entries: Vec<BrowserEntry>,
++    pub resolution: u32,
++}
++fn browser_snapshot(viewer: &crate::resources::ViewerResources) -> Option<BrowserSnapshot> {
++    use crate::{
++        queries::browsers::{page_count, page_entries},
++        resources::FetchState,
++    };
++    fn status<T>(state: &std::sync::Mutex<FetchState<T>>) -> BrowserStatus {
++        state
++            .lock()
++            .map_or(BrowserStatus::Failed, |state| match &*state {
++                FetchState::Idle => BrowserStatus::Idle,
++                FetchState::Loading => BrowserStatus::Loading,
++                FetchState::Loaded(_) => BrowserStatus::Ready,
++                FetchState::Failed => BrowserStatus::Failed,
++            })
++    }
++    let tab = viewer.view.browser?;
++    let query = viewer.view.search.to_lowercase();
++    let pages = page_count(viewer, tab, &query);
++    let page = viewer.view.browser_page.min(pages - 1);
++    Some(BrowserSnapshot {
++        tab,
++        query: viewer.view.search.clone(),
++        page,
++        pages,
++        resolution: viewer.view.resolution,
++        status: match tab {
++            BrowserTab::Library => {
++                if viewer.library.scanning {
++                    BrowserStatus::Loading
++                } else {
++                    BrowserStatus::Ready
++                }
++            }
++            BrowserTab::Khronos => status(&viewer.browsers.khronos),
++            BrowserTab::Models => status(&viewer.browsers.models),
++            BrowserTab::Skies => status(&viewer.browsers.skies),
++        },
++        entries: page_entries(viewer, tab, &query, page),
++    })
++}
++
++#[derive(Clone, Copy)]
++pub struct RenderingControls {
++    pub shading: usize,
++    pub pbr_debug: usize,
++    pub tonemap: usize,
++    pub atmosphere: usize,
++    pub anti_aliasing: usize,
++    pub hdr_loaded: bool,
++    pub show_normals: bool,
++    pub show_bounds: bool,
++    pub fog_start: f32,
++    pub fog_end: f32,
++    pub fog_color: [f32; 3],
++    pub sun_intensity: f32,
++    pub sun_yaw: f32,
++    pub sun_pitch: f32,
++    pub sun_shadows: bool,
++}
++#[derive(Clone, Copy)]
++pub struct GizmoSnapshot {
++    pub enabled: bool,
++    pub mode: GizmoMode,
++    pub snap: bool,
++    pub dragging: bool,
++}
++/// An owned snapshot; no ECS guards, UI entities or mutable resource references escape.
++#[derive(Clone)]
++pub struct ViewerSnapshot {
++    pub gizmo: GizmoSnapshot,
++    pub render: RenderingControls,
++    pub browser: Option<BrowserSnapshot>,
++    pub nodes: Vec<SceneRow>,
++    pub selection: Selection,
++    pub animation: AnimationView,
++    pub clips: Vec<ClipInfo>,
++    pub animation_root: Option<SceneEntity>,
++    pub morphs: Vec<MorphInfo>,
++    pub skeleton_enabled: bool,
++    pub joint_count: usize,
++    pub has_held_clips: bool,
++    pub stats: Option<ModelStats>,
++    pub loading: bool,
++    pub grid: bool,
++    pub notice: Option<String>,
++    pub settings: nightshade_render::data::config::RenderSettings,
++    pub can_undo: bool,
++    pub can_redo: bool,
++}
++pub const ACTION_QUEUE_CAPACITY: usize = 4096;
++pub fn submit(world: &mut World, action: ViewerAction) -> Result<(), ViewerAction> {
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    if viewer.actions.len() >= ACTION_QUEUE_CAPACITY {
++        return Err(action);
++    }
++    viewer.actions.push(action);
++    Ok(())
++}
++pub fn snapshot(world: &World) -> ViewerSnapshot {
++    let viewer = world.res::<crate::resources::ViewerResources>();
++    ViewerSnapshot {
++        gizmo: GizmoSnapshot {
++            enabled: viewer.gizmo.enabled,
++            mode: viewer.gizmo.mode,
++            snap: viewer.view.snap,
++            dragging: viewer.gizmo.drag.is_some(),
++        },
++        render: RenderingControls {
++            shading: viewer.view.shading,
++            pbr_debug: viewer.view.pbr_debug,
++            tonemap: viewer.view.tonemap,
++            atmosphere: viewer.view.atmosphere,
++            anti_aliasing: viewer.view.anti_aliasing,
++            hdr_loaded: viewer.view.hdr_loaded,
++            show_normals: viewer.view.show_normals,
++            show_bounds: viewer.view.show_bounds,
++            fog_start: viewer.view.fog_start,
++            fog_end: viewer.view.fog_end,
++            fog_color: viewer.view.fog_color,
++            sun_intensity: viewer.sun.intensity,
++            sun_yaw: viewer.sun.yaw,
++            sun_pitch: viewer.sun.pitch,
++            sun_shadows: viewer.sun.shadows,
++        },
++        browser: browser_snapshot(viewer),
++        nodes: viewer.model.rows.clone(),
++        selection: viewer.selection.clone(),
++        animation: viewer.animation.clone(),
++        clips: viewer.model.clips.clone(),
++        animation_root: viewer.model.roots.first().copied(),
++        morphs: viewer
++            .model
++            .morphs
++            .iter()
++            .filter(|info| world.storage.is_alive(info.entity))
++            .map(|info| {
++                let mut info = info.clone();
++                if let Some(weights) =
++                    world
++                        .storage
++                        .get::<nightshade_render::components::morph::MorphWeights>(info.entity)
++                {
++                    info.weights = weights.weights.clone();
++                }
++                info
++            })
++            .collect(),
++        skeleton_enabled: viewer.skeleton.enabled,
++        joint_count: viewer
++            .model
++            .entities
++            .iter()
++            .filter_map(|entity| {
++                world
++                    .storage
++                    .get::<nightshade_render::components::skin::Skin>(*entity)
++            })
++            .flat_map(|skin| skin.joints.iter().copied())
++            .collect::<std::collections::HashSet<_>>()
++            .len(),
++        has_held_clips: viewer.model.held_clips.is_some(),
++        stats: viewer.model.stats.clone(),
++        loading: viewer.model.pending.is_some()
++            || viewer
++                .incoming
++                .loading
++                .lock()
++                .ok()
++                .is_some_and(|loading| loading.is_some()),
++        grid: viewer.view.grid,
++        notice: viewer
++            .incoming
++            .notice
++            .lock()
++            .ok()
++            .and_then(|notice| notice.clone()),
++        settings: world
++            .res::<nightshade_render::data::config::RenderSettings>()
++            .clone(),
++        can_undo: !viewer.history.done.is_empty(),
++        can_redo: !viewer.history.undone.is_empty(),
++    }
++}
++/// Compose the original scene/plugin stack with caller-owned arguments and no native UI or event loop.
++pub fn compose(arguments: ViewerArguments, plugin: ViewerCorePlugin) -> App {
++    let mut app = nightshade_app::commands::compose_embedded(
++        nightshade_app::Opening::titled("Viewer"),
++        arguments,
++    );
++    app.add_plugin(nightshade_text::TextPlugin)
++        .add_plugin(nightshade_animation::AnimationPlugin)
++        .add_plugin(nightshade_camera_controller::CameraControllerPlugin)
++        .add_plugin(nightshade_gltf::GltfPlugin)
++        .add_plugin(plugin);
++    app
++}
++
++pub(crate) fn advance_history(mut viewer: ResMut<crate::resources::ViewerResources>) {
++    viewer.history.frame += 1;
++}
++
++/// The persistent navigation camera owned by the viewer, independent of imported models.
++pub fn editor_camera(world: &World) -> Option<Entity> {
++    world
++        .res::<crate::resources::ViewerResources>()
++        .camera_input
++        .viewer_camera
++}
++
++/// Include a frontend-owned camera in the existing camera snapshot and MCP catalogue.
++/// Camera entities remain owned by the caller and are not exported with model roots.
++pub fn register_frontend_camera(world: &mut World, entity: Entity, name: String) -> bool {
++    if !world
++        .storage
++        .has::<nightshade_camera::components::Camera>(entity)
++    {
++        return false;
++    }
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    if !viewer.model.cameras.iter().any(|(held, _)| *held == entity) {
++        viewer.model.cameras.push((entity, name));
++    }
++    true
++}
++
++pub fn request_pick(world: &mut World, x: u32, y: u32) {
++    let viewer = world.res_mut::<crate::resources::ViewerResources>();
++    viewer.picking.click_wanted = Some(nightshade::prelude::nalgebra_glm::vec2(x as f32, y as f32));
++    viewer.picking.click_adds = false;
++}
++pub fn pick_pending(world: &World) -> bool {
++    let viewer = world.res::<crate::resources::ViewerResources>();
++    viewer.picking.click_wanted.is_some() || viewer.picking.outstanding.is_some()
++}
++
++/// Revert an unfinished gizmo gesture without adding an undo entry.
++pub fn cancel_pointer_gesture(world: &mut World) {
++    let viewer = world
++        .resources
++        .res_mut::<crate::resources::ViewerResources>();
++    viewer.picking.last_press = None;
++    viewer.picking.click_wanted = None;
++    viewer.gizmo.hovered = None;
++    if let Some(drag) = viewer.gizmo.drag.take() {
++        for start in drag.starts {
++            crate::commands::selection::restore_transform(
++                &mut world.storage,
++                start.entity,
++                &start.transform,
++            );
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn native_mcp_round_trip_edits_the_frontend_world() {
++        use serde_json::{Value, json};
++        use std::{
++            io::{Read, Write},
++            net::{TcpListener, TcpStream},
++            sync::mpsc,
++            time::{Duration, Instant},
++        };
++        fn raw_call(port: u16, name: &str, arguments: Value) -> Value {
++            let body=json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string();
++            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
++            stream
++                .set_read_timeout(Some(Duration::from_secs(5)))
++                .unwrap();
++            write!(stream,"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
++            let mut response = String::new();
++            stream.read_to_string(&mut response).unwrap();
++            let (_, body) = response.split_once("\r\n\r\n").unwrap();
++            let response: Value = serde_json::from_str(body).unwrap();
++            assert!(response.get("error").is_none(), "{response}");
++            response["result"].clone()
++        }
++        fn call(port: u16, name: &str, arguments: Value) -> Value {
++            let result = raw_call(port, name, arguments);
++            assert_eq!(result["isError"], false, "{result}");
++            result["structuredContent"].clone()
++        }
++        let reservation = TcpListener::bind(("127.0.0.1", 0)).unwrap();
++        let port = reservation.local_addr().unwrap().port();
++        drop(reservation);
++        let mut app = compose(
++            ViewerArguments {
++                preview: true,
++                agent_port: Some(port),
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        submit(
++            &mut app.world,
++            ViewerAction::AddPrimitive(PrimitiveKind::Cube),
++        )
++        .unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let entity = snapshot(&app.world).nodes[0].entity;
++        for field in [
++            MaterialField::NormalScale(2.4), MaterialField::OcclusionStrength(0.45),
++            MaterialField::Dispersion(0.2), MaterialField::Clearcoat(0.85),
++            MaterialField::ClearcoatRoughness(0.3), MaterialField::SheenRoughness(0.4),
++            MaterialField::Iridescence(0.7), MaterialField::IridescenceIor(1.8),
++        ] {
++            submit(&mut app.world, ViewerAction::SetMaterialField(field)).unwrap();
++        }
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        app.world.res_mut::<crate::resources::ViewerResources>().history = Default::default();
++        let (sender, receiver) = mpsc::channel();
++        let client = std::thread::spawn(move || {
++            let scene = call(port, "get_scene", json!({}));
++            assert!(
++                scene["nodes"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|node| node["entity"] == entity.id)
++            );
++            assert_eq!(
++                call(port, "get_camera_views", json!({}))["supported"],
++                false
++            );
++            for (name, args) in [
++                ("set_camera_views", json!({"count":4})),
++                ("focus_camera_view", json!({"index":0})),
++                ("set_view_camera", json!({"index":0,"entity":entity.id})),
++                ("get_camera_views", json!({"typo":true})),
++                (
++                    "set_camera_views",
++                    json!({"count":4,"active":null,"typo":true}),
++                ),
++            ] {
++                assert_eq!(raw_call(port, name, args)["isError"], true);
++            }
++            let edit = call(port, "set_render", json!({"exposure":2.5}));
++            assert_eq!(edit["queued"], true);
++            assert_eq!(edit["operation_status"], "queued");
++            let deadline = Instant::now() + Duration::from_secs(3);
++            let applied = loop {
++                let operation = call(
++                    port,
++                    "get_operation",
++                    json!({"operation_id":edit["operation_id"]}),
++                );
++                if operation["status"] == "applied" {
++                    break operation;
++                }
++                assert_ne!(operation["status"], "failed", "{operation}");
++                assert!(Instant::now() < deadline, "{operation}");
++                std::thread::sleep(Duration::from_millis(1));
++            };
++            assert_eq!(applied["result"]["exposure"], 2.5);
++            assert_eq!(applied["completion_boundary"], "scene_actions_applied");
++            call(port, "set_render", json!({"exposure":1.0}));
++            assert_eq!(
++                call(
++                    port,
++                    "get_operation",
++                    json!({"operation_id":edit["operation_id"]})
++                ),
++                applied,
++                "operation results are retained snapshots, not later live state"
++            );
++            for args in [
++                json!({"operation_id":"unknown"}),
++                json!({}),
++                json!({"operation_id":edit["operation_id"],"typo":true}),
++            ] {
++                assert_eq!(raw_call(port, "get_operation", args)["isError"], true);
++            }
++            call(port, "select_entity", json!({"entity":entity.id}));
++            call(
++                port,
++                "rename_entity",
++                json!({"entity":entity.id,"name":"From MCP"}),
++            );
++            call(
++                port,
++                "set_transform",
++                json!({"entity":entity.id,"translation":[5.,2.,1.]}),
++            );
++            let edited = call(port, "get_transform", json!({"entity":entity.id}));
++            assert_eq!(edited["translation"], json!([5., 2., 1.]));
++            call(port, "undo", json!({}));
++            let undone = call(port, "get_transform", json!({"entity":entity.id}));
++            assert_ne!(undone["translation"], edited["translation"]);
++            call(port, "redo", json!({}));
++            let transform = call(port, "get_transform", json!({"entity":entity.id}));
++            for (name, args) in [
++                ("get_transform", json!({"entity":entity.id,"typo":true})),
++                (
++                    "set_transform",
++                    json!({"entity":entity.id,"scale":[1e100,1,1]}),
++                ),
++                ("play_clip", json!({"index":99999})),
++                (
++                    "set_animation_layer_weight",
++                    json!({"index":0,"weight":0.5}),
++                ),
++                ("get_morph_weights", json!({"entity":entity.id})),
++                ("undo", json!({"typo":true})),
++            ] {
++                assert_eq!(raw_call(port, name, args)["isError"], true, "{name}");
++            }
++            let before_batch = call(port, "get_transform", json!({"entity":entity.id}));
++            for transforms in [
++                json!([]),
++                json!([{"entity":entity.id,"translation":[99,99,99]},{"entity":4294967295u32}]),
++                json!([{"entity":entity.id},{"entity":entity.id}]),
++                json!([{"entity":entity.id,"translation":[99,99,99]},{"entity":entity.id,"scale":[1e100,1,1]}]),
++            ] {
++                assert_eq!(
++                    raw_call(port, "set_transforms", json!({"transforms":transforms}))["isError"],
++                    true
++                );
++                assert_eq!(
++                    call(port, "get_transform", json!({"entity":entity.id})),
++                    before_batch
++                );
++            }
++            let batch = call(
++                port,
++                "set_transforms",
++                json!({"transforms":[{"entity":entity.id,"translation":[5,2,1]}]}),
++            );
++            assert_eq!(batch["transforms"][0], before_batch);
++            let material = call(port, "get_material", json!({"entity":entity.id}));
++            for (field, expected) in [
++                ("normal_scale", 2.4), ("occlusion_strength", 0.45),
++                ("dispersion", 0.2), ("clearcoat", 0.85), ("clearcoat_roughness", 0.3),
++                ("sheen_roughness", 0.4), ("iridescence", 0.7), ("iridescence_ior", 1.8),
++            ] {
++                assert!((material[field].as_f64().unwrap()-expected).abs() < 1e-6, "{field}: {material}");
++            }
++            let changed = call(
++                port,
++                "set_material",
++                json!({"entity":entity.id,"roughness":0.27,"metallic":0.42}),
++            );
++            assert!((changed["roughness"].as_f64().unwrap() - 0.27).abs() < 1e-6);
++            call(port, "undo", json!({}));
++            assert_eq!(
++                call(port, "get_material", json!({"entity":entity.id})),
++                material
++            );
++            call(port, "redo", json!({}));
++            assert_eq!(
++                call(port, "get_material", json!({"entity":entity.id})),
++                changed
++            );
++            call(port, "add_light", json!({"kind":"spot"}));
++            let light = call(port, "get_selection", json!({}))["entity"].clone();
++            let before = call(port, "get_light", json!({"entity":light}));
++            call(port, "select_entity", json!({"entity":entity.id}));
++            let changed = call(
++                port,
++                "set_light",
++                json!({"entity":light,"intensity":42.0,"color":[0.2,0.4,0.8]}),
++            );
++            assert_eq!(changed["intensity"], 42.0);
++            assert_eq!(call(port, "get_selection", json!({}))["entity"], entity.id);
++            call(port, "undo", json!({}));
++            assert_eq!(call(port, "get_light", json!({"entity":light})), before);
++            call(port, "redo", json!({}));
++            assert_eq!(call(port, "get_light", json!({"entity":light})), changed);
++            let cube_before = call(port, "get_transform", json!({"entity":entity.id}));
++            let light_before = call(port, "get_transform", json!({"entity":light}));
++            let batch = call(
++                port,
++                "set_transforms",
++                json!({"transforms":[
++                    {"entity":entity.id,"translation":[7,4,2]},
++                    {"entity":light,"translation":[1,8,3]}
++                ]}),
++            );
++            assert_eq!(batch["transforms"].as_array().unwrap().len(), 2);
++            call(port, "undo", json!({}));
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":entity.id})),
++                cube_before
++            );
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":light})),
++                light_before
++            );
++            call(port, "redo", json!({}));
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":entity.id})),
++                batch["transforms"][0]
++            );
++            assert_eq!(
++                call(port, "get_transform", json!({"entity":light})),
++                batch["transforms"][1]
++            );
++            call(port, "set_animation", json!({"blend_time":0.7}));
++            let animation = call(port, "get_animation", json!({}));
++            assert!((animation["blend_time"].as_f64().unwrap() - 0.7).abs() < 1e-6);
++            sender.send(transform).unwrap();
++        });
++        let deadline = Instant::now() + Duration::from_secs(10);
++        let result = loop {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++            if let Ok(result) = receiver.try_recv() {
++                break result;
++            }
++            assert!(Instant::now() < deadline, "MCP client did not complete");
++            std::thread::sleep(Duration::from_millis(1));
++        };
++        client.join().unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let state = snapshot(&app.world);
++        assert_eq!(result["translation"], json!([5., 2., 1.]));
++        assert_eq!(state.selection.name, "From MCP");
++        assert_eq!(state.selection.translation, [7., 4., 2.]);
++        assert!(
++            !app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
++        let mut crew = app
++            .world
++            .res::<crate::resources::ViewerResources>()
++            .incoming
++            .crew
++            .clone();
++        crate::commands::crew::wait_for_the_crew(&mut crew);
++    }
++
++    #[test]
++    fn light_and_camera_edits_use_core_dispatch_and_history() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        submit(&mut app.world, ViewerAction::AddLight(LightKind::Spot)).unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let before = snapshot(&app.world).selection.light.unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetLightField(LightField::Intensity(42.)),
++        )
++        .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetLightField(LightField::Color([0.2, 0.4, 0.8])),
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let edited = snapshot(&app.world).selection.light.unwrap();
++        assert_eq!(edited.intensity, 42.);
++        assert_eq!(edited.color, [0.2, 0.4, 0.8]);
++        submit(&mut app.world, ViewerAction::Undo).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(snapshot(&app.world).selection.light.unwrap(), before);
++        let camera = app
++            .world
++            .res::<nightshade_camera::resources::ActiveCamera>()
++            .0
++            .unwrap();
++        submit(&mut app.world, ViewerAction::Select(Some(camera))).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let original = snapshot(&app.world).selection.camera.unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetCameraField(CameraField::Near(0.3)),
++        )
++        .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetCameraField(CameraField::Far(100.)),
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let edited = snapshot(&app.world).selection.camera.unwrap();
++        assert_eq!(edited.near, 0.3);
++        assert_eq!(edited.far, 100.);
++        submit(&mut app.world, ViewerAction::Undo).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(snapshot(&app.world).selection.camera.unwrap(), original);
++    }
++
++    #[test]
++    fn browser_snapshots_filter_clamp_and_own_catalog_entries() {
++        use crate::resources::{FetchState, PolyAsset, ViewerResources};
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        {
++            let viewer = app.world.res_mut::<ViewerResources>();
++            *viewer.browsers.models.lock().unwrap() = FetchState::Loaded(
++                (0..125)
++                    .map(|i| PolyAsset {
++                        slug: format!("asset_{i}"),
++                        name: format!("Model {i:03}"),
++                        thumbnail: String::new(),
++                    })
++                    .collect(),
++            );
++        }
++        submit(
++            &mut app.world,
++            ViewerAction::OpenBrowser(BrowserTab::Models),
++        )
++        .unwrap();
++        submit(&mut app.world, ViewerAction::SetBrowserPage(usize::MAX)).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let page = snapshot(&app.world).browser.unwrap();
++        assert_eq!(page.status, BrowserStatus::Ready);
++        assert_eq!((page.page, page.pages, page.entries.len()), (2, 3, 5));
++        submit(
++            &mut app.world,
++            ViewerAction::SetBrowserSearch("MODEL 001".into()),
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let filtered = snapshot(&app.world).browser.unwrap();
++        assert_eq!(
++            (filtered.page, filtered.pages, filtered.entries.len()),
++            (0, 1, 1)
++        );
++        assert!(matches!(&filtered.entries[0].item,BrowserItem::Model(slug) if slug=="asset_1"));
++        {
++            let viewer = app.world.res_mut::<ViewerResources>();
++            *viewer.browsers.models.lock().unwrap() = FetchState::Failed;
++        }
++        let failed = snapshot(&app.world).browser.unwrap();
++        assert_eq!(failed.status, BrowserStatus::Failed);
++        assert!(failed.entries.is_empty());
++        assert_eq!(
++            filtered.entries[0].label, "Model 001",
++            "snapshots own catalog data"
++        );
++        submit(&mut app.world, ViewerAction::CloseBrowser).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert!(snapshot(&app.world).browser.is_none());
++    }
++
++    #[test]
++    fn animation_layers_morph_weights_and_skeleton_work_without_ui() {
++        use crate::resources::ViewerResources;
++        use nightshade_animation::contract::{AnimationClip, AnimationPlayer};
++        use nightshade_render::components::{morph::MorphWeights, skin::Skin};
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        let joint = app
++            .world
++            .spawn((nightshade_scene::contract::GlobalTransform::default(),));
++        let root = app.world.spawn((AnimationPlayer {
++            clips: vec![AnimationClip {
++                name: "Test clip".into(),
++                duration: 2.,
++                ..Default::default()
++            }],
++            ..Default::default()
++        },));
++        let mesh = app.world.spawn((
++            MorphWeights::new(vec![0., 0.], "Morph mesh"),
++            Skin::new(vec![joint], vec![nalgebra_glm::Mat4::identity()]),
++        ));
++        {
++            let viewer = app.world.res_mut::<ViewerResources>();
++            viewer.model.roots = vec![root];
++            viewer.model.entities = vec![root, mesh, joint];
++            viewer.model.clips = vec![ClipInfo {
++                name: "Test clip".into(),
++                duration: 2.,
++            }];
++            viewer.model.morphs = vec![MorphInfo {
++                entity: mesh,
++                name: "Morph mesh".into(),
++                weights: vec![0., 0.],
++            }];
++        }
++        submit(&mut app.world, ViewerAction::SetBlendTime(0.4)).unwrap();
++        submit(&mut app.world, ViewerAction::TogglePlayback).unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::AddAnimationLayer {
++                clip: 0,
++                weight: 0.5,
++            },
++        )
++        .unwrap();
++        submit(&mut app.world, ViewerAction::SetShowSkeleton(true)).unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let initial = snapshot(&app.world);
++        assert_eq!(initial.animation_root, Some(root));
++        assert_eq!(initial.animation.blend_time, 0.4);
++        assert!(initial.animation.playing);
++        assert_eq!(initial.animation.clip, Some(0));
++        assert_eq!(initial.animation.layers.len(), 1);
++        assert_eq!(initial.animation.layers[0].weight, 0.5);
++        assert!(initial.skeleton_enabled);
++        for playing in [false, false, true, true] {
++            submit(&mut app.world, ViewerAction::SetPlayback(playing)).unwrap();
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++            assert_eq!(snapshot(&app.world).animation.playing, playing);
++        }
++
++        assert_eq!(initial.joint_count, 1);
++        submit(
++            &mut app.world,
++            ViewerAction::SetLayerWeight {
++                index: 0,
++                weight: 0.25,
++            },
++        )
++        .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::SetMorphWeight {
++                entity: mesh,
++                index: 1,
++                weight: 0.8,
++            },
++        )
++        .unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        app.world
++            .storage
++            .get_mut::<MorphWeights>(mesh)
++            .unwrap()
++            .set_weight(0, 0.7);
++        let edited = snapshot(&app.world);
++        assert_eq!(edited.animation.layers[0].weight, 0.25);
++        assert_eq!(
++            edited.morphs[0].weights,
++            vec![0.7, 0.8],
++            "snapshots read current ECS morph weights"
++        );
++        assert_eq!(
++            initial.morphs[0].weights,
++            vec![0., 0.],
++            "snapshots own their weights"
++        );
++        submit(&mut app.world, ViewerAction::RemoveAnimationLayer(0)).unwrap();
++        submit(&mut app.world, ViewerAction::StopAnimation).unwrap();
++        submit(&mut app.world, ViewerAction::SetShowSkeleton(false)).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let stopped = snapshot(&app.world);
++        assert!(stopped.animation.layers.is_empty());
++        assert!(!stopped.animation.playing);
++        assert!(!stopped.skeleton_enabled);
++        assert!(
++            !app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
++    }
++
++    #[test]
++    fn rendering_controls_update_effective_settings_and_scene_components() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        let original = snapshot(&app.world);
++        submit(&mut app.world, ViewerAction::SetAtmosphere(7)).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(
++            snapshot(&app.world).render.atmosphere,
++            original.render.atmosphere,
++            "HDR needs a loaded sky"
++        );
++        for action in [
++            ViewerAction::SetAtmosphere(5),
++            ViewerAction::SetTonemap(4),
++            ViewerAction::SetAntiAliasing(2),
++            ViewerAction::SetRenderScale(10.),
++            ViewerAction::SetSsao(true),
++            ViewerAction::SetBloom(true),
++            ViewerAction::SetSsr(true),
++            ViewerAction::SetSsgi(true),
++            ViewerAction::SetFog(true),
++            ViewerAction::SetFogStart(10.),
++            ViewerAction::SetFogEnd(5.),
++            ViewerAction::SetFogColor([0.1, 0.2, 0.3]),
++            ViewerAction::SetDepthOfField(true),
++            ViewerAction::SetFocusDistance(2.),
++            ViewerAction::SetFocusRange(1.),
++            ViewerAction::SetSunIntensity(8.),
++            ViewerAction::SetSunShadows(false),
++            ViewerAction::SetSunYaw(45.),
++            ViewerAction::SetSunPitch(-20.),
++            ViewerAction::SetShowNormals(true),
++            ViewerAction::SetShowBounds(true),
++            ViewerAction::SetShadingMode(3),
++            ViewerAction::SetPbrDebug(1),
++        ] {
++            submit(&mut app.world, action).unwrap();
++        }
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let state = snapshot(&app.world);
++        assert_eq!(
++            (
++                state.render.atmosphere,
++                state.render.tonemap,
++                state.render.anti_aliasing
++            ),
++            (5, 4, 2)
++        );
++        assert!(matches!(
++            state.settings.atmosphere,
++            nightshade_graphics::prelude::Atmosphere::Sunset
++        ));
++        assert!(matches!(
++            state.settings.anti_aliasing,
++            nightshade_render::data::config::AntiAliasing::Taa
++        ));
++        assert_eq!(state.settings.render_scale, 2.);
++        assert!(
++            state.settings.ssao_enabled
++                && state.settings.bloom_enabled
++                && state.settings.ssr_enabled
++                && state.settings.ssgi_enabled
++        );
++        let fog = state.settings.fog.as_ref().unwrap();
++        assert_eq!(fog.start, 10.);
++        assert!((fog.end - 10.1).abs() < 0.001);
++        assert_eq!(fog.color, [0.1, 0.2, 0.3]);
++        assert!(state.settings.depth_of_field.enabled);
++        assert_eq!(state.settings.depth_of_field.focus_distance, 2.);
++        assert_eq!(state.settings.depth_of_field.focus_range, 1.);
++        assert!(state.render.show_normals && state.render.show_bounds);
++        let viewer = app.world.res::<crate::resources::ViewerResources>();
++        let sun = viewer.sun.entity.unwrap();
++        let light = app
++            .world
++            .storage
++            .get::<nightshade_graphics::prelude::Light>(sun)
++            .unwrap();
++        assert_eq!(light.intensity, 8.);
++        assert!(!light.cast_shadows);
++        let camera = viewer.camera_input.viewer_camera.unwrap();
++        assert!(matches!(
++            app.world
++                .storage
++                .get::<nightshade_camera::components::ViewportShading>(camera)
++                .unwrap()
++                .mode,
++            nightshade_camera::components::ShadingMode::Wireframe
++        ));
++    }
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn tracked_actions_fail_before_editing_when_their_target_disappears() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        let target = app
++            .world
++            .storage
++            .spawn((nightshade_scene::contract::Name("temporary".into()),));
++        let id = app
++            .world
++            .res_mut::<crate::resources::ViewerResources>()
++            .operations
++            .reserve("set_render", 0, None)
++            .unwrap();
++        submit(
++            &mut app.world,
++            ViewerAction::AgentBatch {
++                operation_id: id.clone(),
++                actions: vec![ViewerAction::SetExposure(9.)],
++                targets: vec![target],
++            },
++        )
++        .unwrap();
++        app.world.storage.despawn_entities(&[target]);
++        let before = snapshot(&app.world).settings.color_grading.exposure;
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let operation = app
++            .world
++            .res::<crate::resources::ViewerResources>()
++            .operations
++            .get(&id)
++            .unwrap();
++        assert_eq!(operation["status"], "failed");
++        assert!(
++            operation["error"]
++                .as_str()
++                .unwrap()
++                .contains("no longer exists")
++        );
++        assert_eq!(snapshot(&app.world).settings.color_grading.exposure, before);
++    }
++
++    #[test]
++    fn original_native_frontend_still_composes_and_starts() {
++        let mut app = nightshade_app::commands::compose_embedded(
++            nightshade_app::Opening::titled("Viewer test"),
++            ViewerArguments {
++                preview: true,
++                no_agent: true,
++                ..Default::default()
++            },
++        );
++        app.add_plugin(nightshade_text::TextPlugin)
++            .add_plugin(nightshade_animation::AnimationPlugin)
++            .add_plugin(nightshade_camera_controller::CameraControllerPlugin)
++            .add_plugin(nightshade_gltf::GltfPlugin)
++            .add_plugin(nightshade_ui::UiPlugin::new())
++            .add_plugin(crate::ViewerPlugin);
++        app.stages.apply_orderings();
++        app.startup.run(&mut app.world);
++        assert!(
++            app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
++        assert!(
++            !app.world
++                .res::<nightshade_ui::resources::RetainedUiRuntime>()
++                .visible
++        );
++        assert!(
++            app.world
++                .res::<nightshade_platform::contract::window::Window>()
++                .handle
++                .is_none()
++        );
++    }
++    #[test]
++    fn actions_and_snapshots_work_without_retained_ui() {
++        let mut app = compose(
++            ViewerArguments {
++                no_agent: true,
++                preview: true,
++                ..Default::default()
++            },
++            ViewerCorePlugin {
++                persist_settings: false,
++                remote_catalogs: false,
++            },
++        );
++        assert!(
++            !app.world
++                .resources
++                .contains::<nightshade_ui::resources::RetainedUiRuntime>()
++        );
++        app.startup.run(&mut app.world);
++        submit(
++            &mut app.world,
++            ViewerAction::AddPrimitive(PrimitiveKind::Cube),
++        )
++        .unwrap();
++        for _ in 0..3 {
++            app.world.increment_tick();
++            app.stages.run(&mut app.world);
++        }
++        let initial = snapshot(&app.world);
++        let entity = initial.nodes[0].entity;
++        submit(&mut app.world, ViewerAction::Select(Some(entity))).unwrap();
++        submit(&mut app.world, ViewerAction::Rename("Core cube".into())).unwrap();
++        submit(&mut app.world, ViewerAction::SetTranslation([1., 2., 3.])).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        let edited = snapshot(&app.world);
++        assert_eq!(edited.selection.name, "Core cube");
++        assert_eq!(edited.selection.translation, [1., 2., 3.]);
++        assert!(edited.can_undo);
++        submit(&mut app.world, ViewerAction::Undo).unwrap();
++        app.world.increment_tick();
++        app.stages.run(&mut app.world);
++        assert_eq!(snapshot(&app.world).selection.translation, [0., 0., 0.]);
++        assert_eq!(
++            edited.selection.translation,
++            [1., 2., 3.],
++            "snapshots must own their state"
++        );
++    }
++}
+diff --git a/apps/viewer/src/operations.rs b/apps/viewer/src/operations.rs
+new file mode 100644
+index 0000000..1b69047
+--- /dev/null
++++ b/apps/viewer/src/operations.rs
+@@ -0,0 +1,133 @@
++use serde_json::{Value, json};
++use std::collections::VecDeque;
++
++const CAPACITY: usize = 256;
++
++#[derive(Default)]
++pub(crate) struct Operations {
++    entries: VecDeque<Operation>,
++}
++
++struct Operation {
++    id: String,
++    tool: String,
++    target: Option<u32>,
++    status: &'static str,
++    submitted_tick: u64,
++    finished_tick: Option<u64>,
++    result: Option<Value>,
++    error: Option<String>,
++}
++
++impl Operations {
++    pub fn reserve(
++        &mut self,
++        tool: &str,
++        tick: u64,
++        target: Option<u32>,
++    ) -> Result<String, String> {
++        if self.entries.len() == CAPACITY {
++            let index = self
++                .entries
++                .iter()
++                .position(|o| matches!(o.status, "applied" | "failed"))
++                .ok_or("the operation tracker is full; pending operations are retained")?;
++            self.entries.remove(index);
++        }
++        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++        let epoch = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap_or_default()
++            .as_nanos();
++        let id = format!("op-{epoch:x}-{sequence:x}");
++        self.entries.push_back(Operation {
++            id: id.clone(),
++            tool: tool.into(),
++            target,
++            status: "queued",
++            submitted_tick: tick,
++            finished_tick: None,
++            result: None,
++            error: None,
++        });
++        Ok(id)
++    }
++
++    pub fn discard(&mut self, id: &str) {
++        self.entries.retain(|o| o.id != id);
++    }
++
++    pub fn dispatched(&mut self, id: &str) {
++        if let Some(o) = self.entries.iter_mut().find(|o| o.id == id) {
++            o.status = "dispatched";
++        }
++    }
++
++    pub fn ready(&self) -> Vec<(String, String, Option<u32>)> {
++        self.entries
++            .iter()
++            .filter(|o| o.status == "dispatched")
++            .map(|o| (o.id.clone(), o.tool.clone(), o.target))
++            .collect()
++    }
++
++    pub fn finish(&mut self, id: &str, tick: u64, result: Result<Value, String>) {
++        if let Some(o) = self.entries.iter_mut().find(|o| o.id == id) {
++            o.finished_tick = Some(tick);
++            match result {
++                Ok(result) => {
++                    o.status = "applied";
++                    o.result = Some(if result.to_string().len() <= 65536 {
++                        result
++                    } else {
++                        json!({"state_omitted":true,"reason":"post-edit state exceeds 64 KiB; query the scene directly"})
++                    });
++                }
++                Err(error) => {
++                    o.status = "failed";
++                    o.error = Some(error);
++                }
++            }
++        }
++    }
++
++    pub fn get(&self, id: &str) -> Result<Value, String> {
++        let o = self
++            .entries
++            .iter()
++            .find(|o| o.id == id)
++            .ok_or("unknown or expired operation ID")?;
++        Ok(
++            json!({"operation_id":o.id, "tool":o.tool, "status":o.status,
++            "submitted_tick":o.submitted_tick, "finished_tick":o.finished_tick,
++            "result":o.result, "error":o.error,
++            "completion_boundary":"scene_actions_applied"}),
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn pending_records_are_bounded_and_never_evicted() {
++        let mut ops = Operations::default();
++        let first = ops.reserve("set_render", 0, None).unwrap();
++        for _ in 1..CAPACITY {
++            ops.reserve("set_render", 0, None).unwrap();
++        }
++        assert!(ops.reserve("set_render", 1, None).is_err());
++        assert_eq!(ops.get(&first).unwrap()["status"], "queued");
++        ops.finish(&first, 1, Err("target disappeared".into()));
++        let next = ops.reserve("set_render", 2, None).unwrap();
++        assert!(ops.get(&first).is_err());
++        assert_ne!(first, next);
++        ops.dispatched(&next);
++        assert_eq!(ops.ready(), vec![(next.clone(), "set_render".into(), None)]);
++        ops.finish(&next, 3, Ok(json!({"exposure":2.})));
++        let value = ops.get(&next).unwrap();
++        assert_eq!(value["status"], "applied");
++        assert_eq!(value["result"]["exposure"], 2.);
++    }
++}

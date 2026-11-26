@@ -8,7 +8,7 @@ The editor, demos and rendering helpers default to Vulkan with GPU sharing on su
 
 ## Build and run
 
-The [GPUI Rustel app](gpui-rustel/README.md) ports `bespoke_rustel`'s music mode into a native music-first application using this viewport and the existing hub protocol. Run `just rustel` with the sibling source checkout and music producer prepared as documented there.
+The music application lives in its own repository: [gpui-rustel](https://github.com/davehorner/gpui-rustel). It uses this project’s renderer and presentation components.
 
 Requires Rust 1.100.0, Windows SDK/MSVC C++ build tools and `just`. `basis-universal-sys` and `meshopt` compile native C++ upstream dependencies. All application and integration code is Rust.
 
@@ -60,3 +60,19 @@ Verified on Windows with NVIDIA GeForce RTX 4080: headless pixels and picking, C
 
 Integration code: MIT OR Apache-2.0. Nightshade remains MIT OR Apache-2.0, copyright Matthew Jordan Berger. Zed/GPUI and gpui-component retain their Apache-2.0 licenses and notices in their upstream directories. No upstream source attribution has been removed.
 
+
+## Browser / GitHub Pages
+
+The WASM target reuses the GPUI editor, Nightshade viewer core, scene actions, hierarchy, inspector, animation controls and shared-camera viewport. Nightshade renders real 3D through WebGPU. The browser presentation backend asynchronously maps a bounded readback ring and presents completed frames as GPUI images; it never blocks on a GPU wait or creates a native render thread. Windows Vulkan/D3D sharing remains the native path.
+
+```text
+python scripts/prepare.py
+rustup toolchain install nightly-2026-10-31 --target wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked --root target/wasm-tools
+python web/build.py
+python -m http.server 18767 --directory target/nightshade-web
+```
+
+Open http://localhost:18767/ with a WebGPU-capable browser. Optional `?model=HTTPS_URL` loads a remote glTF/GLB through the original viewer loader. Browser filesystem paths, native MCP HTTP serving and Windows GPU sharing are unavailable. Remote assets need CORS. The static site installs a same-origin isolation service worker for GitHub Pages, which cannot configure COOP/COEP response headers directly.
+
+The `Publish WASM to GitHub Pages` workflow builds from pinned source dependencies and deploys after pushes to main/master or manual dispatch. Site: https://davehorner.github.io/gpui-nightshade/.

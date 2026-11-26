@@ -16,7 +16,7 @@ pub struct SceneHost {
     pub distance: f32,
     pub target: glm::Vec3,
     pub pick_request: Option<(u32, u32)>,
-    started: std::time::Instant,
+    started: web_time::Instant,
 }
 impl SceneHost {
     pub async fn cube(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
@@ -99,7 +99,7 @@ impl SceneHost {
             distance: 4.,
             target: glm::vec3(0., 0., 0.),
             pick_request: None,
-            started: std::time::Instant::now(),
+            started: web_time::Instant::now(),
         };
         host.render()?;
         Ok(host)

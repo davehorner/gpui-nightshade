@@ -1107,6 +1107,7 @@ impl Render for Editor {
             )
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 pub fn launch(
     backend: BackendPreference,
     arguments: ViewerArguments,
@@ -1114,67 +1115,95 @@ pub fn launch(
 ) {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            #[cfg(target_os = "macos")]
-            let shortcut = "cmd-shift-p";
-            #[cfg(not(target_os = "macos"))]
-            let shortcut = "ctrl-shift-p";
-            cx.bind_keys([KeyBinding::new(
-                shortcut,
-                commands::OpenCommandPalette,
-                Some("NightshadeEditor"),
-            )]);
-            cx.bind_keys([
-                KeyBinding::new(
-                    "ctrl-alt-1",
-                    commands::SingleCamera,
-                    Some("NightshadeEditor"),
-                ),
-                KeyBinding::new(
-                    "ctrl-alt-2",
-                    commands::SplitCameras,
-                    Some("NightshadeEditor"),
-                ),
-                KeyBinding::new(
-                    "ctrl-alt-4",
-                    commands::QuadCameras,
-                    Some("NightshadeEditor"),
-                ),
-            ]);
-            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
-            let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
-            gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| {
-                    let connection = ViewerConnection::default();
-                    let worker_connection = connection.clone();
-                    let factory: gpui_nightshade_components::SceneFactory =
-                        Arc::new(move |backends, width, height| {
-                            nightshade_viewer_core::open(
-                                arguments.clone(),
-                                backends,
-                                width,
-                                height,
-                                worker_connection.clone(),
-                            )
-                        });
-                    let viewport = cx.new(|cx| {
-                        let mut viewport = NightshadeViewport::from_factory(backend, factory, cx)
-                            .with_scene_input();
-                        viewport.set_camera_layout(camera_layout, cx);
-                        viewport
-                    });
-                    cx.new(|cx| Editor::new(viewport, connection, window, cx))
-                },
-            )
-            .expect("open viewer");
-            cx.activate(true);
-        });
+        .run(move |cx| open_editor(cx, backend, arguments, camera_layout));
+}
+pub(crate) fn open_editor(
+    cx: &mut App,
+    backend: BackendPreference,
+    arguments: ViewerArguments,
+    camera_layout: gpui_nightshade_components::CameraLayout,
+) {
+    gpui_kit::init(cx);
+    #[cfg(target_os = "macos")]
+    let shortcut = "cmd-shift-p";
+    #[cfg(not(target_os = "macos"))]
+    let shortcut = "ctrl-shift-p";
+    cx.bind_keys([KeyBinding::new(
+        shortcut,
+        commands::OpenCommandPalette,
+        Some("NightshadeEditor"),
+    )]);
+    cx.bind_keys([
+        KeyBinding::new(
+            "ctrl-alt-1",
+            commands::SingleCamera,
+            Some("NightshadeEditor"),
+        ),
+        KeyBinding::new(
+            "ctrl-alt-2",
+            commands::SplitCameras,
+            Some("NightshadeEditor"),
+        ),
+        KeyBinding::new(
+            "ctrl-alt-4",
+            commands::QuadCameras,
+            Some("NightshadeEditor"),
+        ),
+    ]);
+    gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+    let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
+    gpui_kit::open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        },
+        cx,
+        |window, cx| {
+            let connection = ViewerConnection::default();
+            let worker_connection = connection.clone();
+            #[cfg(not(target_arch = "wasm32"))]
+            let factory: gpui_nightshade_components::SceneFactory =
+                Arc::new(move |backends, width, height| {
+                    nightshade_viewer_core::open(
+                        arguments.clone(),
+                        backends,
+                        width,
+                        height,
+                        worker_connection.clone(),
+                    )
+                });
+            #[cfg(target_arch = "wasm32")]
+            let factory: gpui_nightshade_components::SceneFactory =
+                Arc::new(move |backends, width, height| {
+                    let arguments = arguments.clone();
+                    let connection = worker_connection.clone();
+                    Box::pin(async move {
+                        let runtime = nightshade_viewer_core::ViewerRuntime::with_options(
+                            arguments,
+                            backends,
+                            width,
+                            height,
+                            connection,
+                            nightshade_viewer_core::ViewerCorePlugin {
+                                persist_settings: false,
+                                remote_catalogs: true,
+                            },
+                        )
+                        .await?;
+                        Ok(Box::new(runtime) as Box<dyn gpui_nightshade::host::ViewportHost>)
+                    })
+                });
+            let viewport = cx.new(|cx| {
+                let mut viewport =
+                    NightshadeViewport::from_factory(backend, factory, cx).with_scene_input();
+                viewport.set_camera_layout(camera_layout, cx);
+                viewport
+            });
+            cx.new(|cx| Editor::new(viewport, connection, window, cx))
+        },
+    )
+    .expect("open viewer");
+    cx.activate(true);
 }
 
 fn finite_scalar(value: &str) -> Option<f32> {

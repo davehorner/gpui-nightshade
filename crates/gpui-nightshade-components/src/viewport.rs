@@ -28,7 +28,19 @@ impl NightshadeViewport {
         backend: gpui_nightshade::presentation::BackendPreference,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::from_factory(backend, Arc::new(gpui_nightshade::host::cube_viewport), cx)
+        #[cfg(not(target_arch = "wasm32"))]
+        let factory: crate::SceneFactory = Arc::new(gpui_nightshade::host::cube_viewport);
+        #[cfg(target_arch = "wasm32")]
+        let factory: crate::SceneFactory = Arc::new(|backends, width, height| {
+            Box::pin(async move {
+                Ok(Box::new(
+                    gpui_nightshade::host::SceneHost::cube_with_backends(width, height, backends)
+                        .await?,
+                )
+                    as Box<dyn gpui_nightshade::host::ViewportHost>)
+            })
+        });
+        Self::from_factory(backend, factory, cx)
     }
     /// Creates a viewport whose scene is built entirely on the render worker.
     pub fn from_factory(

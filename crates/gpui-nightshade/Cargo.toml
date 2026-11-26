@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+web-time = "1"
 nightshade.workspace = true
 nightshade-wgpu.workspace = true
 nightshade-render.workspace = true

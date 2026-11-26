@@ -1,3 +1,4 @@
+use web_time::Instant;
 use super::{AlphaMode, ColorSpace, CpuFrame, FrameId};
 use crate::wgpu;
 use std::{
@@ -5,7 +6,6 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
-    time::Instant,
 };
 
 struct Slot {

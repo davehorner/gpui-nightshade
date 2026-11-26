@@ -1197,6 +1197,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_log"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e89f72f65e8501878b8a004d5a1afb780987e2ce2b4532c562e367a72c57499f"
+dependencies = [
+ "log",
+ "web-sys",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2428,6 +2438,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2981,6 +3003,7 @@ dependencies = [
  "nightshade-wgpu-outline",
  "nightshade-wgpu-shading",
  "pollster",
+ "web-time",
 ]
 
 [[package]]
@@ -2988,11 +3011,13 @@ name = "gpui-nightshade-components"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "gloo-timers",
  "gpui-kit",
  "gpui-nightshade",
  "gpui-pre-windows",
  "image",
  "pollster",
+ "wasm-bindgen-futures",
  "windows 0.62.2",
 ]
 
@@ -3000,12 +3025,18 @@ dependencies = [
 name = "gpui-nightshade-viewer"
 version = "0.1.0"
 dependencies = [
+ "console_error_panic_hook",
+ "console_log",
  "ehttp",
+ "gpui-kit",
  "gpui-nightshade",
  "gpui-nightshade-components",
  "image",
+ "log",
  "nightshade-viewer-core",
  "serde_json",
+ "wasm-bindgen",
+ "web-time",
 ]
 
 [[package]]

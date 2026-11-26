@@ -26,3 +26,9 @@ path = "upstream/nightshade/crates/plugins/draw/nightshade-wgpu-outline"
 [patch.crates-io]
 gpui-pre = { path = "upstream/gpui-snapshot/gpui" }
 gpui-pre-windows = { path = "upstream/gpui-snapshot/gpui-windows" }
+
+[profile.web]
+inherits = "release"
+opt-level = 1
+codegen-units = 16
+strip = "debuginfo"

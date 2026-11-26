@@ -123,7 +123,10 @@ impl SharedViews {
         for request in viewer::core::take_camera_view_requests(world) {
             let result = self.apply_request(world, request.command);
             self.after_scene(world);
+            #[cfg(not(target_arch = "wasm32"))]
             viewer::core::finish_camera_view_request(world, &request.operation_id, result);
+            #[cfg(target_arch = "wasm32")]
+            let _ = result;
         }
     }
 
