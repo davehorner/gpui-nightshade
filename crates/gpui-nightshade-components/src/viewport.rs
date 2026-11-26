@@ -91,6 +91,43 @@ impl NightshadeViewport {
             poll_task: None,
         }
     }
+    /// Navigation pose shared by pointer navigation and embedding controls.
+    pub fn camera_pose(&self) -> gpui_nightshade::host::CameraPose {
+        gpui_nightshade::host::CameraPose {
+            yaw: self.request.yaw,
+            pitch: self.request.pitch,
+            distance: self.request.distance,
+            target: self.request.target,
+        }
+    }
+    /// Place the active view without replacing its scene or presentation worker.
+    pub fn set_camera_pose(
+        &mut self,
+        pose: gpui_nightshade::host::CameraPose,
+        cx: &mut Context<Self>,
+    ) {
+        if ![
+            pose.yaw,
+            pose.pitch,
+            pose.distance,
+            pose.target[0],
+            pose.target[1],
+            pose.target[2],
+        ]
+        .iter()
+        .all(|v| v.is_finite())
+        {
+            return;
+        }
+        self.cancel_input();
+        self.request.yaw = pose.yaw;
+        self.request.pitch = pose.pitch.clamp(-1.5, 1.5);
+        self.request.distance = pose.distance.clamp(0.01, 200.);
+        self.request.target = pose.target;
+        self.request.pick = None;
+        self.worker.request(self.request);
+        cx.notify();
+    }
     pub fn camera_layout(&self) -> crate::CameraLayout {
         self.request.layout
     }
@@ -391,7 +428,7 @@ impl Render for NightshadeViewport {
                 this.focus_at(event.position);
                 let delta = event.delta.pixel_delta(px(16.)).y;
                 this.request.distance =
-                    (this.request.distance * (-f32::from(delta) * 0.003).exp()).clamp(0.5, 100.);
+                    (this.request.distance * (-f32::from(delta) * 0.003).exp()).clamp(0.01, 200.);
                 this.worker.request(this.request);
                 cx.stop_propagation();
             }))
