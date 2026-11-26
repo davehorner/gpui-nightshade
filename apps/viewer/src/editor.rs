@@ -1151,6 +1151,11 @@ pub(crate) fn open_editor(
         ),
     ]);
     gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+    #[cfg(target_arch = "wasm32")]
+    gpui_kit::component::Theme::update(cx, |theme| {
+        theme.font_family = "Inter Variable".into();
+        theme.mono_font_family = "JetBrains Mono".into();
+    });
     let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
     gpui_kit::open_window(
         WindowOptions {

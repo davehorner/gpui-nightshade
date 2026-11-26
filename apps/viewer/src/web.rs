@@ -60,17 +60,27 @@ gpui_kit::assets::icon_assets!(
         WindowRestore
     ]
 );
-thread_local! {static APPLICATION:RefCell<Option<ApplicationHandle>>=const {RefCell::new(None)};}
+thread_local! {static APPLICATION:RefCell<Option<ApplicationHandle>>=const {RefCell::new(None)};
+static PANIC:RefCell<String>=const {RefCell::new(String::new())};}
 #[wasm_bindgen]
 pub fn run(model: Option<String>) -> Result<(), JsValue> {
-    console_error_panic_hook::set_once();
+    std::panic::set_hook(Box::new(|info| {
+        PANIC.with(|slot| *slot.borrow_mut() = info.to_string());
+        console_error_panic_hook::hook(info);
+    }));
     let _ = console_log::init_with_level(log::Level::Info);
     platform::web_init();
     let application = platform::single_threaded_web().with_assets(WebAssets);
     let handle=application.run_embedded(move |cx| {
-  cx.text_system().add_fonts(vec![Cow::Borrowed(include_bytes!("../../../upstream/gpui-component/crates/story-web/fonts/Inter-Regular.ttf").as_slice()),Cow::Borrowed(include_bytes!("../../../upstream/gpui-component/crates/story-web/fonts/JetBrainsMono-Regular.ttf").as_slice())]).expect("bundled fonts");
+  cx.text_system().add_fonts(vec![
+                Cow::Borrowed(include_bytes!("../../../upstream/gpui-component/crates/story-web/fonts/IBMPlexSans-Regular.ttf").as_slice()),Cow::Borrowed(include_bytes!("../../../upstream/gpui-component/crates/story-web/fonts/Inter-Regular.ttf").as_slice()),Cow::Borrowed(include_bytes!("../../../upstream/gpui-component/crates/story-web/fonts/JetBrainsMono-Regular.ttf").as_slice())]).expect("bundled fonts");
   crate::editor::open_editor(cx,gpui_nightshade::presentation::BackendPreference::Readback,nightshade_viewer_core::ViewerArguments{model,no_agent:true,..Default::default()},gpui_nightshade_components::CameraLayout::Single);
  });
     APPLICATION.with(|slot| *slot.borrow_mut() = Some(handle));
     Ok(())
+}
+
+#[wasm_bindgen]
+pub fn last_error() -> String {
+    PANIC.with(|slot| slot.borrow().clone())
 }
