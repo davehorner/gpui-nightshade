@@ -76,3 +76,5 @@ python -m http.server 18767 --directory target/nightshade-web
 Open http://localhost:18767/ with a WebGPU-capable browser. Optional `?model=HTTPS_URL` loads a remote glTF/GLB through the original viewer loader. Browser filesystem paths, native MCP HTTP serving and Windows GPU sharing are unavailable. Remote assets need CORS. The static site installs a same-origin isolation service worker for GitHub Pages, which cannot configure COOP/COEP response headers directly.
 
 The `Publish WASM to GitHub Pages` workflow builds from pinned source dependencies and deploys after pushes to main/master or manual dispatch. Site: https://davehorner.github.io/gpui-nightshade/.
+
+The browser build includes a compatibility copy of wgpu 29.0.4 whose internal WebGPU enum bindings are private to Rust. This lets Nightshade’s wgpu 29 and GPUI’s wgpu 30 coexist in one WASM module without duplicate JavaScript exports; upstream licenses and Rust APIs are retained.

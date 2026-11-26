@@ -24,6 +24,7 @@ nightshade-wgpu-shading = { path = "upstream/nightshade/crates/plugins/draw/nigh
 path = "upstream/nightshade/crates/plugins/draw/nightshade-wgpu-outline"
 
 [patch.crates-io]
+wgpu = { path = "upstream/wgpu-web-compat" }
 gpui-pre = { path = "upstream/gpui-snapshot/gpui" }
 gpui-pre-windows = { path = "upstream/gpui-snapshot/gpui-windows" }
 

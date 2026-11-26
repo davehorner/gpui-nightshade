@@ -1,0 +1,1 @@
+This is wgpu 29.0.4 from crates.io, with its upstream licenses preserved. Its generated webgpu_sys enum wasm_bindgen attributes are private, so the real Nightshade WebGPU renderer and GPUI (wgpu 30) can coexist in one WASM module without duplicate JavaScript exports. The Rust enum API and renderer behavior are unchanged.
