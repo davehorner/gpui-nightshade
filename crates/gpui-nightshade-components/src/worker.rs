@@ -696,7 +696,7 @@ fn run(
                 });
                 state.changed = true;
                 state.diagnostics = format!(
-                    "{} {:?} | asynchronous readback | {}x{} | {:.1} ms | {} dropped | {} KiB staging | frame {}",
+                    "{} {:?} | {}x{} | {:.1} ms | {} dropped | {} KiB staging | frame {}",
                     host.renderer().gpu_profile.name,
                     host.renderer().gpu_profile.backend,
                     frame.width,

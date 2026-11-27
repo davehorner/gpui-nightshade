@@ -199,7 +199,7 @@ impl Worker {
                         state.status.adapter = Some(renderer.gpu_profile.name.clone());
                         state.changed = true;
                         state.diagnostics = format!(
-                            "Nightshade WebGPU · {}×{} · frame {} · asynchronous readback",
+                            "Nightshade WebGPU · {}×{} · frame {}",
                             size.0, size.1, info.id.sequence
                         );
                     }

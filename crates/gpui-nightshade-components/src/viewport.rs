@@ -525,6 +525,6 @@ impl Render for NightshadeViewport {
                             ))
                     }),
             )
-            .child(div().text_xs().p_1().child(self.diagnostics.clone()))
+            .child(div().min_w_0().flex_shrink_0().truncate().text_xs().p_1().child(self.diagnostics.clone()))
     }
 }
