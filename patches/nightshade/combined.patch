@@ -4127,7 +4127,7 @@ index c8814f1..39d5971 100644
      (size as f32).log2().floor() as u32 + 1
 
 diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl
-index f88a25d..44ee83d 100644
+index f88a25d..4429ed3 100644
 --- a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl
 @@ -90,7 +90,11 @@ struct VertexOutput {
@@ -4142,7 +4142,19 @@ index f88a25d..44ee83d 100644
      @location(9) @interpolate(flat) world_scale_factor: f32,
      @location(10) prev_world_pos: vec3<f32>,
      @location(11) world_tangent: vec4<f32>,
-@@ -364,6 +368,14 @@ fn vs_main(
+@@ -347,7 +351,11 @@ fn vs_main(
+     out.tex_coords_affine = texture_uv(in.tex_coords, in.tex_coords_1, mat.base_transform, uniforms.time);
+     out.world_scale_factor = (length(model_mat3[0]) + length(model_mat3[1]) + length(model_mat3[2])) / 3.0;
+     out.prev_world_pos = (prev_transforms[object.transform_index].model * vec4<f32>(position, 1.0)).xyz;
++#ifdef WEB_COMPAT
++    out.instance_tint = instance_custom_data[object.transform_index] * materials[out.material_id].base_color;
++#else
+     out.instance_tint = instance_custom_data[object.transform_index];
++#endif
+     out.vertex_color = in.color;
+ 
+     let shadow_offset_position = world_position.xyz + world_normal * uniforms.shadow_normal_bias;
+@@ -364,6 +372,14 @@ fn vs_main(
      );
      out.view_normal = normalize(view_mat3 * world_normal);
  
@@ -4157,7 +4169,7 @@ index f88a25d..44ee83d 100644
      return out;
  }
  
-@@ -832,8 +844,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
+@@ -832,8 +848,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
      return range_attenuation * spot_attenuation * light.color.rgb * cookie_tint;
  }
  
@@ -4173,7 +4185,7 @@ index f88a25d..44ee83d 100644
      let material_filter_scale = select(0.0, 1.0, uniforms.material_filtering != 0u);
      material_uv0_ddx = dpdx(in.tex_coords) * material_filter_scale;
      material_uv0_ddy = dpdy(in.tex_coords) * material_filter_scale;
-@@ -917,7 +936,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -917,7 +940,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
          vec4<f32>(1.0),
          sample_atlas_srgb(
              material.base_layer,
@@ -4182,13 +4194,13 @@ index f88a25d..44ee83d 100644
              in.tex_coords_1.x,
              material.atlas_cells,
              texture_uv_grad(material.base_transform),
-@@ -1548,3 +1567,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -1548,3 +1571,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
      output.view_normal = vec4<f32>(normalize(in.view_normal), reflectivity);
      return output;
  }
 +#endif
 diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh_oit.wgsl b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh_oit.wgsl
-index a26b8bc..37eef08 100644
+index a26b8bc..ab1f144 100644
 --- a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh_oit.wgsl
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh_oit.wgsl
 @@ -90,7 +90,11 @@ struct VertexOutput {
@@ -4203,7 +4215,15 @@ index a26b8bc..37eef08 100644
      @location(9) @interpolate(flat) flip_winding: u32,
      @location(10) @interpolate(flat) world_scale_factor: f32,
      @location(11) @interpolate(flat) entity_id: u32,
-@@ -284,6 +288,11 @@ fn vs_main(
+@@ -280,10 +284,19 @@ fn vs_main(
+     out.flip_winding = object.flip_winding;
+     out.tex_coords = in.tex_coords;
+     out.tex_coords_1 = in.tex_coords_1;
++#ifdef WEB_COMPAT
++    out.instance_tint = instance_custom_data[object.transform_index] * materials[out.material_id].base_color;
++#else
+     out.instance_tint = instance_custom_data[object.transform_index];
++#endif
      out.vertex_color = in.color;
      out.entity_id = object.entity_id;
  
@@ -4215,7 +4235,7 @@ index a26b8bc..37eef08 100644
      return out;
  }
  
-@@ -412,8 +421,15 @@ fn fs_blend_opaque_prepass(in: VertexOutput, @builtin(front_facing) is_front_fac
+@@ -412,8 +425,15 @@ fn fs_blend_opaque_prepass(in: VertexOutput, @builtin(front_facing) is_front_fac
      }
  }
  
@@ -4231,7 +4251,7 @@ index a26b8bc..37eef08 100644
      let material_filter_scale = select(0.0, 1.0, uniforms.material_filtering != 0u);
      material_uv0_ddx = dpdx(in.tex_coords) * material_filter_scale;
      material_uv0_ddy = dpdy(in.tex_coords) * material_filter_scale;
-@@ -735,7 +751,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
+@@ -735,7 +755,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
              Lo = Lo + light_contribution * sky_access;
          }
  
@@ -4240,7 +4260,7 @@ index a26b8bc..37eef08 100644
          let grid = light_grid[cluster_index];
          let base_offset = cluster_index * MAX_LIGHTS_PER_CLUSTER;
  
-@@ -899,7 +915,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
+@@ -899,7 +919,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
      if transmission_factor > 0.0 {
          alpha = 1.0;
      }
@@ -4249,13 +4269,13 @@ index a26b8bc..37eef08 100644
  
      var out: OITOutput;
      final_color = clamp(select(vec3<f32>(0.0), final_color, final_color == final_color), vec3<f32>(0.0), vec3<f32>(65000.0));
-@@ -917,3 +933,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
+@@ -917,3 +937,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
  
      return out;
  }
 +#endif
 diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl
-index 84b0586..1a180c2 100644
+index 84b0586..e689131 100644
 --- a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl
 @@ -92,7 +92,11 @@ struct VertexOutput {
@@ -4270,7 +4290,19 @@ index 84b0586..1a180c2 100644
      @location(9) @interpolate(flat) world_scale_factor: f32,
      @location(10) world_tangent: vec4<f32>,
      @location(11) @interpolate(flat) entity_id: u32,
-@@ -387,6 +391,14 @@ fn vs_main(
+@@ -371,7 +375,11 @@ fn vs_main(
+     let mat = materials[object.material_id];
+     out.tex_coords_affine = texture_uv(in.tex_coords, in.tex_coords_1, mat.base_transform, uniforms.time);
+     out.world_scale_factor = blended_scale;
++#ifdef WEB_COMPAT
++    out.instance_tint = instance_custom_data[instance_id] * materials[out.material_id].base_color;
++#else
+     out.instance_tint = instance_custom_data[instance_id];
++#endif
+     out.vertex_color = in.color;
+ 
+     let shadow_offset_position = world_position.xyz + skinned_normal * uniforms.shadow_normal_bias;
+@@ -387,6 +395,14 @@ fn vs_main(
      );
      out.view_normal = normalize(view_mat3 * skinned_normal);
  
@@ -4285,7 +4317,7 @@ index 84b0586..1a180c2 100644
      return out;
  }
  
-@@ -855,8 +867,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
+@@ -855,8 +871,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
      return range_attenuation * spot_attenuation * light.color.rgb * cookie_tint;
  }
  
@@ -4301,7 +4333,7 @@ index 84b0586..1a180c2 100644
      let material_filter_scale = select(0.0, 1.0, uniforms.material_filtering != 0u);
      material_uv0_ddx = dpdx(in.tex_coords) * material_filter_scale;
      material_uv0_ddy = dpdy(in.tex_coords) * material_filter_scale;
-@@ -940,7 +959,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -940,7 +963,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
          vec4<f32>(1.0),
          sample_atlas_srgb(
              material.base_layer,
@@ -4310,13 +4342,13 @@ index 84b0586..1a180c2 100644
              in.tex_coords_1.x,
              material.atlas_cells,
              texture_uv_grad(material.base_transform),
-@@ -1571,3 +1590,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -1571,3 +1594,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
      output.view_normal = vec4<f32>(normalize(in.view_normal), reflectivity);
      return output;
  }
 +#endif
 diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh_oit.wgsl b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh_oit.wgsl
-index 7a9b8b5..6f8b0fa 100644
+index 7a9b8b5..becd222 100644
 --- a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh_oit.wgsl
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh_oit.wgsl
 @@ -92,7 +92,11 @@ struct VertexOutput {
@@ -4331,7 +4363,17 @@ index 7a9b8b5..6f8b0fa 100644
      @location(9) @interpolate(flat) world_scale_factor: f32,
      @location(10) @interpolate(flat) entity_id: u32,
      @location(11) prev_world_pos: vec3<f32>,
-@@ -324,6 +328,11 @@ fn vs_main(
+@@ -318,12 +322,21 @@ fn vs_main(
+     out.world_scale_factor = blended_scale;
+     out.tex_coords = in.tex_coords;
+     out.tex_coords_1 = in.tex_coords_1;
++#ifdef WEB_COMPAT
++    out.instance_tint = instance_custom_data[instance_id] * materials[out.material_id].base_color;
++#else
+     out.instance_tint = instance_custom_data[instance_id];
++#endif
+     out.vertex_color = in.color;
+     out.view_depth = -view_position.z;
      out.entity_id = object.entity_id;
      out.flip_winding = object.flip_winding;
  
@@ -4343,7 +4385,7 @@ index 7a9b8b5..6f8b0fa 100644
      return out;
  }
  
-@@ -452,8 +461,15 @@ fn fs_blend_opaque_prepass(in: VertexOutput, @builtin(front_facing) is_front_fac
+@@ -452,8 +465,15 @@ fn fs_blend_opaque_prepass(in: VertexOutput, @builtin(front_facing) is_front_fac
      }
  }
  
@@ -4359,7 +4401,7 @@ index 7a9b8b5..6f8b0fa 100644
      let material_filter_scale = select(0.0, 1.0, uniforms.material_filtering != 0u);
      material_uv0_ddx = dpdx(in.tex_coords) * material_filter_scale;
      material_uv0_ddy = dpdy(in.tex_coords) * material_filter_scale;
-@@ -775,7 +791,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
+@@ -775,7 +795,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
              Lo = Lo + light_contribution * sky_access;
          }
  
@@ -4368,7 +4410,7 @@ index 7a9b8b5..6f8b0fa 100644
          let grid = light_grid[cluster_index];
          let base_offset = cluster_index * MAX_LIGHTS_PER_CLUSTER;
  
-@@ -939,7 +955,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
+@@ -939,7 +959,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
      if transmission_factor > 0.0 {
          alpha = 1.0;
      }
@@ -4377,7 +4419,7 @@ index 7a9b8b5..6f8b0fa 100644
  
      var out: OITOutput;
      final_color = clamp(select(vec3<f32>(0.0), final_color, final_color == final_color), vec3<f32>(0.0), vec3<f32>(65000.0));
-@@ -957,3 +973,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
+@@ -957,3 +977,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> OITO
  
      return out;
  }
@@ -4386,7 +4428,7 @@ diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/browser_ma
 new file mode 100644
 --- /dev/null
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/browser_material.wgsl
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,98 @@
 +// Compact mobile material path. Keep the existing vertex, skinning/morph,
 +// material and MRT ABIs; avoid the driver's monolithic advanced PBR fragment.
 +#ifdef WEB_COMPAT
@@ -4414,7 +4456,8 @@ new file mode 100644
 +    var tint = in.vertex_color;
 +    var vertex_ao = 1.0;
 +    if material.vertex_occlusion != 0u { vertex_ao = tint.r; tint = vec4<f32>(1.0, 1.0, 1.0, tint.a); }
-+    var base = material.base_color * in.instance_tint * tint;
++    // Keep instance color on the vertex-to-fragment path, including skinned draws.
++    var base = in.instance_tint * tint;
 +    if material.base_layer != NO_LAYER {
 +        base *= sample_atlas_srgb(material.base_layer, base_uv, in.tex_coords_1.x, material.atlas_cells, texture_uv_grad(material.base_transform));
 +    }
