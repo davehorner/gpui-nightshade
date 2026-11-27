@@ -88,6 +88,7 @@ impl Worker {
             let result = async {
                 report_stage("starting","Creating the Nightshade WebGPU renderer");
                 let mut host = factory(wgpu::Backends::BROWSER_WEBGPU, 640, 480).await?;
+                report_stage("starting","Nightshade scene created; preparing the first frame");
                 let lost=Arc::new(std::sync::Mutex::new(None));
                 let report_lost=lost.clone();
                 host.renderer().device.set_device_lost_callback(move |reason,message| {
@@ -156,7 +157,9 @@ impl Worker {
                     // Do not submit more GPU work while every readback is still in
                     // flight. Slow/mobile adapters must apply backpressure upstream.
                     if ring.in_flight()<options.staging_frames {
+                        if sequence==0 {report_stage("starting","Rendering the first Nightshade frame");}
                         host.render()?;
+                        if sequence==0 {report_stage("starting","Reading back the first Nightshade frame");}
                         let renderer=host.renderer();
                         if let Some(texture) = renderer.external_output.as_ref() {
                             if ring.enqueue(&renderer.device, &renderer.queue, texture, sequence)? {sequence+=1;}
