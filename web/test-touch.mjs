@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {installViewportTouch} from '../crates/gpui-nightshade-components/src/touch.mjs';
+import {installViewportTouch} from '../crates/gpui-nightshade-components/src/touch.js';
 
 class Input extends Event {
   constructor(type, init) {

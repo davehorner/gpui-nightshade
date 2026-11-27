@@ -4,7 +4,7 @@ use gpui_nightshade::presentation::{FrameInfo, PresentationStatus};
 use std::{sync::Arc, time::Duration};
 
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen(module = "/src/touch.mjs")]
+#[wasm_bindgen::prelude::wasm_bindgen(module = "/src/touch.js")]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = viewportTouchBounds)]
     fn viewport_touch_bounds(x: f32, y: f32, width: f32, height: f32);
