@@ -38,19 +38,17 @@ function variantSource(test){
 export async function runMeshCheck(record){
   record({rendererRevision:captured.revision,profile:captured.profile,targets:captured.descriptor.fragment.targets});
   record({currentRendererRevision:current.revision});
-  const cases=[
-    {name:'Original failing control',variant:'exact'},
-    {name:'Previously passing explicit perspective control',variant:'perspective'},
-    {name:'Original shader with implicit perspective',variant:'default-perspective'},
-    {name:'Exact shader emitted by dd80236',variant:'current'},
-    {name:'Current shader with explicit perspective annotation',variant:'current-explicit'},
-    {name:'Current shader without direct light loop',variant:'current-no-light'},
-    {name:'Current shader with application device limits',variant:'current',appLimits:true},
-    {name:'Previously passing shader with application device limits',variant:'perspective',appLimits:true}
-  ];
+  const cases=[];
+  for(const reuse of [true,false])for(let round=1;round<=3;round++)for(const variant of ['current','perspective','default-perspective'])
+    cases.push({name:`${reuse?'Shared':'Fresh'} device / ${variant} / round ${round}`,variant,reuse,appLimits:true});
+  const sharedDevices=new Map(),results=[];
   for(const test of cases)if(test.variant){test.vertex=true;test.fragment=true;}
   let failed=0;
+  const hash=async value=>Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value))),x=>x.toString(16).padStart(2,"0")).join("");
+  const sourceHashes={};for(const variant of ["current","perspective","default-perspective"])sourceHashes[variant]=await hash(variantSource({variant}));
+  record({sourceHashes,descriptorHash:await hash(JSON.stringify(captured.descriptor)),repetitions:3});
   for(const test of cases){
+    if(!test.reuse&&sharedDevices.size){for(const device of sharedDevices.values()){device.destroy();await device.lost;}sharedDevices.clear();await new Promise(resolve=>setTimeout(resolve,100));}
     record({test:test.name,stage:'Requesting device'});let device,cleaning=false;const resources=[];
     let timer;
     try{
@@ -64,7 +62,9 @@ export async function runMeshCheck(record){
         requiredLimits.maxSamplersPerShaderStage=Math.min(adapter.limits.maxSamplersPerShaderStage,64);
       }
       record({test:test.name,requiredLimits});
-      device=await adapter.requestDevice({requiredFeatures:['indirect-first-instance'],requiredLimits});
+      const key=JSON.stringify(requiredLimits);
+      device=test.reuse?sharedDevices.get(key):null;
+      if(!device){device=await adapter.requestDevice({requiredFeatures:['indirect-first-instance'],requiredLimits});if(test.reuse)sharedDevices.set(key,device);}
       device.lost.then(info=>{if(!cleaning)record({test:test.name,deviceLost:{reason:info.reason,message:info.message}});});
       device.addEventListener('uncapturederror',event=>record({test:test.name,uncapturedError:event.error.message}));
       device.pushErrorScope('out-of-memory');device.pushErrorScope('internal');device.pushErrorScope('validation');
@@ -85,7 +85,7 @@ export async function runMeshCheck(record){
       const targets=structuredClone(captured.descriptor.fragment.targets);
       if(test.masks){for(const target of targets)delete target.blend;targets[1].writeMask=1;targets[3].writeMask=3;}
       record({test:test.name,stage:'Creating pipeline'});
-      const pipeline=device.createRenderPipeline({...captured.descriptor,label:test.name,layout,vertex:{...captured.descriptor.vertex,module:vertex,entryPoint:test.vertex?'vs_main':'vs_probe'},fragment:{...captured.descriptor.fragment,module:fragment,entryPoint:test.fragment?'fs_main':'fs_probe',targets}});
+      const pipeline=device.createRenderPipeline({...captured.descriptor,label:'Opaque Mesh Pipeline',layout,vertex:{...captured.descriptor.vertex,module:vertex,entryPoint:test.vertex?'vs_main':'vs_probe'},fragment:{...captured.descriptor.fragment,module:fragment,entryPoint:test.fragment?'fs_main':'fs_probe',targets}});
       const colors=targets.map(target=>{const texture=device.createTexture({size:[64,64],format:target.format,usage:GPUTextureUsage.RENDER_ATTACHMENT});resources.push(texture);return {view:texture.createView(),loadOp:'clear',storeOp:'store',clearValue:{r:0,g:0,b:0,a:1}};});
       const depth=device.createTexture({size:[64,64],format:captured.descriptor.depthStencil.format,usage:GPUTextureUsage.RENDER_ATTACHMENT});resources.push(depth);
       const encoder=device.createCommandEncoder(),pass=encoder.beginRenderPass({colorAttachments:colors,depthStencilAttachment:{view:depth.createView(),depthClearValue:0,depthLoadOp:'clear',depthStoreOp:'store'}});
@@ -95,9 +95,11 @@ export async function runMeshCheck(record){
       record({test:test.name,stage:'Submitting draw and waiting for GPU'});device.queue.submit([encoder.finish()]);
       await Promise.race([device.queue.onSubmittedWorkDone(),device.lost.then(info=>{throw Error('Device lost: '+info.message);}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('GPU timed out after 15 seconds')),15000);})]);
       const errors=[];for(let i=0;i<3;i++){const error=await device.popErrorScope();if(error)errors.push({type:error.constructor.name,message:error.message});}
-      if(errors.length){failed++;record({test:test.name,status:'Failed',errors});}else record({test:test.name,status:'Passed'});
-    }catch(error){failed++;record({test:test.name,status:'Failed',error:String(error?.stack||error)});}
-    finally{clearTimeout(timer);cleaning=true;for(const resource of resources)resource.destroy();device?.destroy();}
+      const status=errors.length?'Failed':'Passed';if(errors.length)failed++;
+      results.push({test:test.name,status});record({test:test.name,status,...(errors.length?{errors}:{})});
+    }catch(error){failed++;results.push({test:test.name,status:'Failed'});record({test:test.name,status:'Failed',error:String(error?.stack||error)});}
+    finally{clearTimeout(timer);cleaning=true;for(const resource of resources)resource.destroy();if(!test.reuse&&device){device.destroy();await device.lost;await new Promise(resolve=>setTimeout(resolve,100));}}
   }
-  return {passed:cases.length-failed,failed,total:cases.length};
+  for(const device of sharedDevices.values()){device.destroy();await device.lost;}
+  return {passed:cases.length-failed,failed,total:cases.length,results};
 }
