@@ -92,8 +92,14 @@ impl Worker {
                 let lost=Arc::new(std::sync::Mutex::new(None));
                 let report_lost=lost.clone();
                 host.renderer().device.set_device_lost_callback(move |reason,message| {
-                    *report_lost.lock().unwrap()=Some(format!("Nightshade WebGPU device lost ({reason:?}): {message}. Reload to retry; ?safe=1 reduces GPU load."));
+                    *report_lost.lock().unwrap()=Some(format!("Nightshade WebGPU device lost ({reason:?}): {message}. GPU failure recorded; gpu-check.html can test copy/readback without the scene."));
                 });
+                let report_error=lost.clone();
+                host.renderer().device.on_uncaptured_error(Arc::new(move |error| {
+                    *report_error.lock().unwrap()=Some(format!("Nightshade WebGPU error: {error}"));
+                }));
+                report_stage("starting","Waiting for Nightshade startup rendering to complete on the GPU");
+                wait_for_gpu(&host.renderer().queue,&lost).await?;
                 let mut announced=false;
                 let mut size = (0, 0);
                 let mut generation = 0;
@@ -159,7 +165,11 @@ impl Worker {
                     if ring.in_flight()<options.staging_frames {
                         if sequence==0 {report_stage("starting","Rendering the first Nightshade frame");}
                         host.render()?;
-                        if sequence==0 {report_stage("starting","Reading back the first Nightshade frame");}
+                        if sequence==0 {
+                            report_stage("starting","Waiting for the first Nightshade scene render to complete on the GPU");
+                            wait_for_gpu(&host.renderer().queue,&lost).await?;
+                            report_stage("starting","Copying the completed Nightshade frame for readback");
+                        }
                         let renderer=host.renderer();
                         if let Some(texture) = renderer.external_output.as_ref() {
                             if ring.enqueue(&renderer.device, &renderer.queue, texture, sequence)? {sequence+=1;}
@@ -253,4 +263,18 @@ impl Drop for Worker {
     fn drop(&mut self) {
         self.shared.borrow_mut().quit = true;
     }
+}
+
+// During startup, separate rendering completion from texture copy/map. Submission
+// returning does not mean the GPU finished; a late loss must not blame readback.
+async fn wait_for_gpu(queue: &wgpu::Queue,error: &Arc<std::sync::Mutex<Option<String>>>) -> Result<(),Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicBool,Ordering};
+    let done=Arc::new(AtomicBool::new(false));let flag=done.clone();
+    queue.on_submitted_work_done(move || {flag.store(true,Ordering::Release);});
+    for _ in 0..1500 {
+        if let Some(message)=error.lock().unwrap().clone(){return Err(message.into());}
+        if done.load(Ordering::Acquire){return Ok(());}
+        gloo_timers::future::TimeoutFuture::new(10).await;
+    }
+    Err("Nightshade GPU work did not complete within 15 seconds; inspect gpu-check.html to isolate copy/readback".into())
 }

@@ -81,10 +81,17 @@ The browser build includes a compatibility copy of wgpu 29.0.4 whose internal We
 
 ### Mobile startup diagnostics
 
-Open `?diagnostics=1` to check the browser adapter without downloading the WASM
-application. Copy diagnostics includes the startup stage, WebGPU features and
-limits; it sends nothing automatically. The current renderer requires
+Open `?diagnostics=1` to pause before requesting an adapter or downloading WASM.
+After Start app, Copy diagnostics includes the startup stage, WebGPU features and
+limits. `diagnostics.html` reads the last saved stage without GPU calls.
+`gpu-check.html` runs explicit RGBA/BGRA copy/readback, indirect-draw and two-device
+checks without GPUI, WASM or audio. Reports are copied manually, never sent automatically. The current renderer requires
 `indirect-first-instance`. Startup stays visible until the first scene frame;
 an interrupted startup can be retried explicitly. Narrow browser windows use
 tabs for the viewport, scene, inspector and animation instead of side-by-side
 panels. Browser shadow targets use a smaller budget; native targets are unchanged.
+
+Browser SDF caching uses an 8 MiB atlas instead of the desktop 343 MiB atlas;
+lookup buffers and environment-lighting filter sizes/sample counts are also bounded.
+Startup waits for GPU rendering completion before copying the first frame, so
+a rendering failure is reported separately from copy/readback.
