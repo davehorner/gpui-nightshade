@@ -81,7 +81,22 @@ impl crate::Error {
         } else if js_error.has_type::<webgpu_sys::GpuOutOfMemoryError>() {
             crate::Error::OutOfMemory { source }
         } else {
-            panic!("Unexpected error");
+            // GPUInternalError is a normal WebGPU error category. Preserve its
+            // message (and future error subclasses) instead of aborting WASM.
+            let property = |object: &JsValue, key: &str| {
+                js_sys::Reflect::get(object, &JsValue::from_str(key)).ok()
+            };
+            let name = property(js_error.as_ref(), "constructor")
+                .and_then(|constructor| property(&constructor, "name"))
+                .and_then(|name| name.as_string())
+                .unwrap_or_else(|| "GPUError".into());
+            let message = property(js_error.as_ref(), "message")
+                .and_then(|message| message.as_string())
+                .unwrap_or_else(|| format!("{js_error:?}"));
+            crate::Error::Internal {
+                source,
+                description: format!("WebGPU internal error ({name}): {message}"),
+            }
         }
     }
 }
