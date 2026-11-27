@@ -7,9 +7,22 @@ use std::{sync::Arc, time::Duration};
 #[wasm_bindgen::prelude::wasm_bindgen(module = "/src/touch.js")]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = viewportTouchBounds)]
-    fn viewport_touch_bounds(x: f32, y: f32, width: f32, height: f32);
+    fn viewport_touch_bounds(
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        yaw: f32,
+        pitch: f32,
+        distance: f32,
+        tx: f32,
+        ty: f32,
+        tz: f32,
+    );
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = clearViewportTouch)]
     fn clear_viewport_touch();
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = takeViewportTouch)]
+    fn take_viewport_touch() -> js_sys::Float32Array;
 }
 
 pub struct NightshadeViewport {
@@ -211,6 +224,10 @@ impl NightshadeViewport {
     }
     fn apply_visibility(&mut self, cx: &mut Context<Self>) {
         self.cancel_input();
+        #[cfg(target_arch = "wasm32")]
+        if !self.visibility.is_presented() {
+            clear_viewport_touch();
+        }
         self.request.pick = None;
         self.worker.set_visible(self.visibility.is_presented());
         cx.notify();
@@ -335,6 +352,26 @@ impl Render for NightshadeViewport {
                         .await;
                     if view
                         .update_in(cx, |view, window, cx| {
+                            #[cfg(target_arch = "wasm32")]
+                            if view.visibility.is_presented() {
+                                let delta = take_viewport_touch().to_vec();
+                                if delta.len() == 8 && delta[7] != 0. {
+                                    view.cancel_input();
+                                    view.focus_at(point(px(delta[5]), px(delta[6])));
+                                    view.request.target[0] -=
+                                        delta[0] * view.request.distance * 0.002;
+                                    view.request.target[1] +=
+                                        delta[1] * view.request.distance * 0.002;
+                                    view.request.yaw -= delta[2] * 0.01;
+                                    view.request.pitch =
+                                        (view.request.pitch + delta[3] * 0.01).clamp(-1.5, 1.5);
+                                    view.request.distance = (view.request.distance
+                                        * (-delta[4]).exp())
+                                    .clamp(0.01, 200.);
+                                    view.worker.request(view.request);
+                                    cx.notify();
+                                }
+                            }
                             window.poll_external_images();
                             if view.visibility.is_presented() && view.worker.has_update() {
                                 cx.notify();
@@ -443,12 +480,20 @@ impl Render for NightshadeViewport {
                 canvas(
                     move |bounds, window, cx| {
                         let scale = window.scale_factor();
-                        #[cfg(target_arch = "wasm32")]
-                        viewport_touch_bounds(
-                            bounds.origin.x.into(), bounds.origin.y.into(),
-                            bounds.size.width.into(), bounds.size.height.into(),
-                        );
                         let _ = entity.update(cx, |this, _| {
+                            #[cfg(target_arch = "wasm32")]
+                            viewport_touch_bounds(
+                                bounds.origin.x.into(),
+                                bounds.origin.y.into(),
+                                bounds.size.width.into(),
+                                bounds.size.height.into(),
+                                this.request.yaw,
+                                this.request.pitch,
+                                this.request.distance,
+                                this.request.target[0],
+                                this.request.target[1],
+                                this.request.target[2],
+                            );
                             if (this.bounds != bounds || this.scale != scale)
                                 && this.drag_button.is_some()
                             {
@@ -537,6 +582,14 @@ impl Render for NightshadeViewport {
                             ))
                     }),
             )
-            .child(div().min_w_0().flex_shrink_0().truncate().text_xs().p_1().child(self.diagnostics.clone()))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .truncate()
+                    .text_xs()
+                    .p_1()
+                    .child(self.diagnostics.clone()),
+            )
     }
 }

@@ -1,8 +1,9 @@
 // Multi-touch navigation is scoped to the rendered viewport. Single touches
 // remain with GPUI, including taps, controls, and its existing drag-to-zoom.
-export function installViewportTouch(canvas, getBounds, surface = window) {
+const diagnostics = {downs:0, moves:0, accepted:0, navigation:0, applied:0};
+export function installViewportTouch(canvas, getBounds, surface = window, navigate = queueNavigation) {
   const fingers = new Map();
-  let captured = false, baseline = null, dragging = false, forwarding = false;
+  let captured = false, baseline = null, forwarding = false;
   const inside = p => {
     const b = getBounds(), r = canvas.getBoundingClientRect();
     const x = p.clientX - r.left, y = p.clientY - r.top;
@@ -19,26 +20,14 @@ export function installViewportTouch(canvas, getBounds, surface = window) {
     forwarding = true;
     try { canvas.dispatchEvent(event); } finally { forwarding = false; }
   };
-  const mouse = (type, p, shiftKey=false) => emit(new PointerEvent(type, {
-    bubbles:true, pointerId:2147483646, pointerType:'mouse',
-    clientX:p.x, clientY:p.y, button:2, buttons:type === 'pointerup' ? 0 : 2, shiftKey
-  }));
-  const release = () => {
-    if (dragging) mouse('pointerup', baseline);
-    dragging = false;
-  };
-  const rebase = () => {
-    release();
-    baseline = fingers.size ? sample() : null;
-    if (fingers.size >= 2) {
-      mouse('pointerdown', baseline, fingers.size === 2);
-      dragging = true;
-    }
-  };
+  const rebase = () => { baseline = fingers.size ? sample() : null; };
   const handle = event => {
     if (forwarding || event.pointerType !== 'touch') return;
+    if (event.type === 'pointerdown') diagnostics.downs++;
+    if (event.type === 'pointermove') diagnostics.moves++;
     if (event.type === 'pointerdown') {
       if (!inside(event)) return;
+      diagnostics.accepted++;
       fingers.set(event.pointerId, event);
       if (fingers.size < 2 && !captured) return;
       if (!captured) {
@@ -57,11 +46,9 @@ export function installViewportTouch(canvas, getBounds, surface = window) {
         if (!captured) return;
         if (fingers.size >= 2) {
           const next = sample();
-          mouse('pointermove', next, next.count === 2);
+          navigate(next.count === 2 ? 'pan' : 'orbit', next.x - baseline.x, next.y - baseline.y, next);
           if (next.count === 2 && baseline.distance > 1 && next.distance > 1) {
-            emit(new WheelEvent('wheel', {bubbles:true, cancelable:true,
-              clientX:next.x, clientY:next.y,
-              deltaY:-Math.log(next.distance / baseline.distance) / 0.003}));
+            navigate('zoom', Math.log(next.distance / baseline.distance), 0, next);
           }
           baseline = next;
         }
@@ -75,26 +62,51 @@ export function installViewportTouch(canvas, getBounds, surface = window) {
     event.stopImmediatePropagation();
     if (!fingers.size) captured = false;
   };
-  const cancel = () => { release(); fingers.clear(); captured = false; baseline = null; };
+  const cancel = () => { fingers.clear(); captured = false; baseline = null; pending.fill(0); };
   for (const type of ['pointerdown','pointermove','pointerup','pointercancel'])
     surface.addEventListener(type, handle, {capture:true, passive:false});
   surface.addEventListener('blur', cancel);
+  surface.addEventListener('resize', cancel);
   return () => {
     cancel();
     for (const type of ['pointerdown','pointermove','pointerup','pointercancel'])
       surface.removeEventListener(type, handle, true);
     surface.removeEventListener('blur', cancel);
+    surface.removeEventListener('resize', cancel);
   };
 }
 
 let bounds, dispose;
-export function viewportTouchBounds(x,y,width,height) {
+// Bounded, coalesced camera deltas; no synthetic mouse focus/IME events.
+const pending = new Float32Array(8);
+const empty = new Float32Array(0);
+function queueNavigation(kind, x, y, center) {
+  diagnostics.navigation++;
+  const offset = kind === 'pan' ? 0 : kind === 'orbit' ? 2 : 4;
+  pending[offset] += x;
+  if (kind !== 'zoom') pending[offset + 1] += y;
+  const r = document.querySelector('body > canvas')?.getBoundingClientRect();
+  pending[5] = center.x - (r?.left || 0);
+  pending[6] = center.y - (r?.top || 0);
+  pending[7] = 1;
+}
+export function takeViewportTouch() {
+  if (!pending[7]) return empty;
+  diagnostics.applied++;
+  const result = pending.slice();
+  pending.fill(0);
+  return result;
+}
+let pose;
+export function viewportTouchState() { return {bounds, pose, diagnostics}; }
+export function viewportTouchBounds(x,y,width,height,yaw,pitch,distance,tx,ty,tz) {
   bounds = [x,y,width,height];
+  pose = {yaw,pitch,distance,target:[tx,ty,tz]};
   if (!dispose) {
     const canvas = document.querySelector('body > canvas');
     if (canvas) dispose = installViewportTouch(canvas, () => bounds);
   }
 }
 export function clearViewportTouch() {
-  dispose?.(); dispose = null; bounds = null;
+  dispose?.(); dispose = null; bounds = null; pending.fill(0);
 }
