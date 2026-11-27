@@ -4032,3 +4032,72 @@ index 0cf2c82..4c7f302 100644
 +    #[cfg(not(target_arch = "wasm32"))]
 +    let _ = message;
 +}
+
+diff --git a/crates/plugins/draw/nightshade-wgpu-sdf/src/systems/sdf.rs b/crates/plugins/draw/nightshade-wgpu-sdf/src/systems/sdf.rs
+index cf820c4..6d2e666 100644
+--- a/crates/plugins/draw/nightshade-wgpu-sdf/src/systems/sdf.rs
++++ b/crates/plugins/draw/nightshade-wgpu-sdf/src/systems/sdf.rs
+@@ -13,8 +13,10 @@ pub(crate) const SDF_PASS: &str = "sdf_pass";
+ pub(crate) const SDF_CACHE_PASS: &str = "sdf_cache_pass";
+ 
+ pub(crate) const MAX_LEVELS: u32 = 12;
+-pub(crate) const MAX_SIDE: u32 = 64;
+-pub(crate) const ATLAS_BRICKS: u32 = 56;
++// Browser viewers share memory with GPUI, audio and the tab. The desktop
++// SDF cache alone reserves a 448-cubed RGBA atlas before any SDF is visible.
++pub(crate) const MAX_SIDE: u32 = if cfg!(target_arch = "wasm32") { 32 } else { 64 };
++pub(crate) const ATLAS_BRICKS: u32 = if cfg!(target_arch = "wasm32") { 16 } else { 56 };
+ pub(crate) const ATLAS_TEXELS: u32 = ATLAS_BRICKS * SDF_BRICK_SAMPLES;
+ pub(crate) const MAX_BRICKS: u32 = ATLAS_BRICKS * ATLAS_BRICKS * ATLAS_BRICKS;
+ pub(crate) const MAX_POINTERS: u32 = MAX_LEVELS * MAX_SIDE * MAX_SIDE * MAX_SIDE;
+
+diff --git a/crates/plugins/draw/nightshade-wgpu-sky/src/systems/envmap_filter.rs b/crates/plugins/draw/nightshade-wgpu-sky/src/systems/envmap_filter.rs
+index e546a64..5d89b71 100644
+--- a/crates/plugins/draw/nightshade-wgpu-sky/src/systems/envmap_filter.rs
++++ b/crates/plugins/draw/nightshade-wgpu-sky/src/systems/envmap_filter.rs
+@@ -1,11 +1,13 @@
+ use nightshade_wgpu::backend::PassBuild;
+ use nightshade_wgpu::backend::build;
+ use nightshade_wgpu::wgpu;
+-const IRRADIANCE_SIZE: u32 = 64;
+-const PREFILTERED_SIZE: u32 = 512;
++// Bound first-frame IBL work on mobile GPUs; viewport resolution does not
++// reduce these offscreen filtering dispatches. Native quality stays unchanged.
++const IRRADIANCE_SIZE: u32 = if cfg!(target_arch = "wasm32") { 16 } else { 64 };
++const PREFILTERED_SIZE: u32 = if cfg!(target_arch = "wasm32") { 128 } else { 512 };
+ const PREFILTERED_MIP_LEVELS: u32 = 5;
+-const IRRADIANCE_SAMPLES: u32 = 1024;
+-const PREFILTERED_SAMPLES: u32 = 512;
++const IRRADIANCE_SAMPLES: u32 = if cfg!(target_arch = "wasm32") { 64 } else { 1024 };
++const PREFILTERED_SAMPLES: u32 = if cfg!(target_arch = "wasm32") { 64 } else { 512 };
+ 
+ const DISTRIBUTION_LAMBERTIAN: u32 = 0;
+ const DISTRIBUTION_GGX: u32 = 1;
+
+diff --git a/crates/plugins/draw/nightshade-wgpu-sky/src/systems/sky.rs b/crates/plugins/draw/nightshade-wgpu-sky/src/systems/sky.rs
+index 9e986a0..f3bd99b 100644
+--- a/crates/plugins/draw/nightshade-wgpu-sky/src/systems/sky.rs
++++ b/crates/plugins/draw/nightshade-wgpu-sky/src/systems/sky.rs
+@@ -6,7 +6,7 @@ use nightshade_wgpu::backend::build;
+ use nightshade_wgpu::backend::{PassDecl, PassExecutionContext, PassNode, PassPosition};
+ use nightshade_wgpu::wgpu;
+ 
+-const PROCEDURAL_CUBEMAP_SIZE: u32 = 1024;
++const PROCEDURAL_CUBEMAP_SIZE: u32 = if cfg!(target_arch = "wasm32") { 256 } else { 1024 };
+ 
+ fn calculate_mip_count(size: u32) -> u32 {
+     (size as f32).log2().floor() as u32 + 1
+
+diff --git a/crates/plugins/draw/nightshade-wgpu-sky/src/systems/hdr.rs b/crates/plugins/draw/nightshade-wgpu-sky/src/systems/hdr.rs
+index c8814f1..39d5971 100644
+--- a/crates/plugins/draw/nightshade-wgpu-sky/src/systems/hdr.rs
++++ b/crates/plugins/draw/nightshade-wgpu-sky/src/systems/hdr.rs
+@@ -3,7 +3,7 @@ use nightshade_wgpu::backend::PassBuild;
+ use nightshade_wgpu::backend::build;
+ use nightshade_wgpu::wgpu;
+ 
+-const CUBEMAP_SIZE: u32 = 1024;
++const CUBEMAP_SIZE: u32 = if cfg!(target_arch = "wasm32") { 256 } else { 1024 };
+ 
+ fn calculate_mip_count(size: u32) -> u32 {
+     (size as f32).log2().floor() as u32 + 1
