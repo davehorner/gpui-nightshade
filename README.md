@@ -104,3 +104,7 @@ with up to eight direct lights. Advanced lobes, volume/transmission, area-light
 shading and material shadows are omitted. Desktop browsers and native apps keep
 the full shaders. `?materials=compact` or `?materials=full` overrides the browser
 selection; diagnostics record when mobile material shaders are selected.
+
+`mesh-check.html` reproduces the captured compact opaque mesh pipeline without
+WASM/audio and compares actual vertex/fragment stages, target state and sampler
+variants using small zero-filled resources. It preserves per-case GPU errors.
