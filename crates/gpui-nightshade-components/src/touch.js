@@ -14,6 +14,7 @@ export function installViewportTouch(canvas, getBounds, surface = window, naviga
     return {x:p.reduce((s,v)=>s+v.clientX,0)/p.length,
       y:p.reduce((s,v)=>s+v.clientY,0)/p.length,
       distance:p.length === 2 ? Math.hypot(p[1].clientX-p[0].clientX,p[1].clientY-p[0].clientY) : 0,
+      angle:p.length === 2 ? Math.atan2(p[1].clientY-p[0].clientY,p[1].clientX-p[0].clientX) : 0,
       count:p.length};
   };
   const emit = event => {
@@ -48,6 +49,10 @@ export function installViewportTouch(canvas, getBounds, surface = window, naviga
           const next = sample();
           navigate(next.count === 2 ? 'pan' : 'orbit', next.x - baseline.x, next.y - baseline.y, next);
           if (next.count === 2 && baseline.distance > 1 && next.distance > 1) {
+            // Wrap across +/- pi so crossing the seam cannot spin the camera.
+            const angle = next.angle - baseline.angle;
+            const twist = Math.atan2(Math.sin(angle), Math.cos(angle));
+            if (Math.abs(twist) > 1e-6) navigate('orbit', -twist / 0.01, 0, next);
             navigate('zoom', Math.log(next.distance / baseline.distance), 0, next);
           }
           baseline = next;
