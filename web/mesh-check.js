@@ -1,4 +1,5 @@
 import captured from './mesh-pipeline-data.js?v=1';
+import current from './mesh-pipeline-current.js?v=3';
 const constantFragment=`struct Out {@location(0) color:vec4f,@location(1) entity:f32,@location(2) normal:vec4f,@location(3) velocity:vec2f}; @fragment fn fs_probe()->Out {return Out(vec4f(1,0,0,1),0,vec4f(0,0,1,0),vec2f(0));}`;
 const output=captured.source.match(/struct VertexOutput\s*\{[\s\S]*?\}/)[0];
 const constantVertex=output+` @vertex fn vs_probe(@builtin(vertex_index) i:u32)->VertexOutput {var p=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));var out:VertexOutput;out.position=vec4f(p[i],0.5,1);out.normal=vec3f(0,0,1);out.view_normal=vec3f(0,0,1);out.instance_tint=vec4f(1);out.vertex_color=vec4f(1);out.world_tangent=vec4f(1,0,0,1);return out;}`;
@@ -13,7 +14,7 @@ function perspective(source){return source.replaceAll('@interpolate(linear)','@i
 function withoutLightLoop(source){const p=functionParts(source),start=p.body.indexOf('loop {');if(start<0)throw Error('Light loop missing');let end=p.body.indexOf('{',start)+1,depth=1;while(depth){if(p.body[end]==='{')depth++;else if(p.body[end]==='}')depth--;end++;}return withBody(source,p.body.slice(0,start)+p.body.slice(end));}
 function withoutIbl(source){let body=functionParts(source).body;for(const name of ['irradiance_map','prefiltered_env','brdf_lut']){const start=body.indexOf('textureSampleLevel('+name+',');if(start<0)throw Error('IBL sample missing: '+name);let end=body.indexOf('(',start)+1,depth=1;while(depth){if(body[end]==='(')depth++;else if(body[end]===')')depth--;end++;}body=body.slice(0,start)+'vec4<f32>(0.03,0.03,0.03,1.0)'+body.slice(end);}return withBody(source,body);}
 function variantSource(test){
-  let source=captured.source;
+  let source=test.variant.startsWith('current')?current.source:captured.source;
   const texture=source.match(/@group\(2\)\s*@binding\(0\)\s*var (\w+)/)[1],sampler=source.match(/@group\(2\)\s*@binding\(2\)\s*var (\w+)/)[1];
   const input=source.match(/fn fs_main\((\w+):/)[1];
   switch(test.variant){
@@ -28,25 +29,24 @@ function variantSource(test){
     case 'no-light-loop':source=perspective(withoutLightLoop(source));break;
     case 'no-ibl':source=perspective(withoutIbl(source));break;
     case 'perspective':source=perspective(source);break;
+    case 'default-perspective':source=source.replaceAll('@interpolate(linear)','');break;
+    case 'current-explicit':source=source.replace('@location(8) tex_coords_affine:', '@location(8) @interpolate(perspective) tex_coords_affine:');break;
+    case 'current-no-light':source=withoutLightLoop(source);break;
   }
   return source;
 }
 export async function runMeshCheck(record){
   record({rendererRevision:captured.revision,profile:captured.profile,targets:captured.descriptor.fragment.targets});
+  record({currentRendererRevision:current.revision});
   const cases=[
-    {name:'Simple shaders with exact four mesh render targets',vertex:false,fragment:false},
-    {name:'Original module with constant fragment and original input interface',variant:'constant-interface'},
-    {name:'Original module with constant fragment and no fragment inputs',variant:'constant-no-input'},
-    {name:'Exact compact mesh vertex and fragment',variant:'exact'},
-    {name:'Exact shaders with perspective instead of linear interpolation',variant:'perspective'},
-    {name:'Fragment reads only one linear interpolation varying',variant:'linear-only'},
-    {name:'Fragment reads only one perspective interpolation varying',variant:'perspective-only'},
-    {name:'Fragment reads one material storage field directly',variant:'material-field'},
-    {name:'Fragment copies the material struct then reads base color',variant:'material-copy'},
-    {name:'Fragment samples only the material texture array with explicit LOD',variant:'texture-level'},
-    {name:'Fragment samples only the material texture array with gradients',variant:'texture-grad'},
-    {name:'Exact fragment without the direct light loop',variant:'no-light-loop'},
-    {name:'Exact fragment without IBL texture samples',variant:'no-ibl'}
+    {name:'Original failing control',variant:'exact'},
+    {name:'Previously passing explicit perspective control',variant:'perspective'},
+    {name:'Original shader with implicit perspective',variant:'default-perspective'},
+    {name:'Exact shader emitted by dd80236',variant:'current'},
+    {name:'Current shader with explicit perspective annotation',variant:'current-explicit'},
+    {name:'Current shader without direct light loop',variant:'current-no-light'},
+    {name:'Current shader with application device limits',variant:'current',appLimits:true},
+    {name:'Previously passing shader with application device limits',variant:'perspective',appLimits:true}
   ];
   for(const test of cases)if(test.variant){test.vertex=true;test.fragment=true;}
   let failed=0;
@@ -56,7 +56,15 @@ export async function runMeshCheck(record){
     try{
       if(!navigator.gpu)throw Error('WebGPU is unavailable');const adapter=await navigator.gpu.requestAdapter();if(!adapter)throw Error('No GPU adapter');
       record({test:test.name,adapter:{vendor:adapter.info?.vendor,architecture:adapter.info?.architecture},limits:{maxSamplersPerShaderStage:adapter.limits.maxSamplersPerShaderStage,maxSampledTexturesPerShaderStage:adapter.limits.maxSampledTexturesPerShaderStage,maxStorageBuffersPerShaderStage:adapter.limits.maxStorageBuffersPerShaderStage}});
-      device=await adapter.requestDevice({requiredFeatures:['indirect-first-instance'],requiredLimits:{maxStorageBuffersPerShaderStage:16}});
+      const requiredLimits={maxStorageBuffersPerShaderStage:16};
+      if(test.appLimits){
+        for(const key of ['maxBufferSize','maxStorageBufferBindingSize','maxTextureArrayLayers','maxTextureDimension1D','maxTextureDimension2D','maxTextureDimension3D'])requiredLimits[key]=adapter.limits[key];
+        requiredLimits.maxBindGroups=Math.min(adapter.limits.maxBindGroups,8);
+        requiredLimits.maxSampledTexturesPerShaderStage=Math.min(adapter.limits.maxSampledTexturesPerShaderStage,64);
+        requiredLimits.maxSamplersPerShaderStage=Math.min(adapter.limits.maxSamplersPerShaderStage,64);
+      }
+      record({test:test.name,requiredLimits});
+      device=await adapter.requestDevice({requiredFeatures:['indirect-first-instance'],requiredLimits});
       device.lost.then(info=>{if(!cleaning)record({test:test.name,deviceLost:{reason:info.reason,message:info.message}});});
       device.addEventListener('uncapturederror',event=>record({test:test.name,uncapturedError:event.error.message}));
       device.pushErrorScope('out-of-memory');device.pushErrorScope('internal');device.pushErrorScope('validation');
