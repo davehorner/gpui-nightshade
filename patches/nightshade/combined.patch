@@ -4386,7 +4386,7 @@ diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/browser_ma
 new file mode 100644
 --- /dev/null
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/browser_material.wgsl
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,97 @@
 +// Compact mobile material path. Keep the existing vertex, skinning/morph,
 +// material and MRT ABIs; avoid the driver's monolithic advanced PBR fragment.
 +#ifdef WEB_COMPAT
@@ -4410,7 +4410,6 @@ new file mode 100644
 +#endif
 +    if uniforms.flat_color.a >= 2.0 { discard; }
 +    let material = materials[in.material_id];
-+    if material_reveal_distance(material, in.world_pos) > 0.0 { discard; }
 +    let base_uv = texture_uv(in.tex_coords, in.tex_coords_1, material.base_transform, uniforms.time);
 +    var tint = in.vertex_color;
 +    var vertex_ao = 1.0;
@@ -4428,55 +4427,35 @@ new file mode 100644
 +        base.a = 1.0;
 +    }
 +#endif
-+    var geometric_normal = select(-in.normal, in.normal, front);
-+    let tangent = select(-in.world_tangent, in.world_tangent, front);
-+    var normal_sample = vec3<f32>(0.5, 0.5, 1.0);
-+    if material.normal_layer != NO_LAYER {
-+        let uv = texture_uv(in.tex_coords, in.tex_coords_1, material.normal_transform, uniforms.time);
-+        normal_sample = sample_linear_layer(material.normal_layer, uv, texture_uv_grad(material.normal_transform)).xyz;
-+    }
-+    let N = get_normal(geometric_normal, tangent, normal_sample, material.normal_layer != NO_LAYER, material.normal_scale, material.normal_map_flags);
-+    var metallic = material.metallic;
-+    var roughness = material.roughness;
-+    if material.metallic_roughness_layer != NO_LAYER {
-+        let uv = texture_uv(in.tex_coords, in.tex_coords_1, material.metallic_roughness_transform, uniforms.time);
-+        let mr = sample_linear_layer(material.metallic_roughness_layer, uv, texture_uv_grad(material.metallic_roughness_transform));
-+        roughness *= mr.g; metallic *= mr.b;
-+    }
-+    roughness = clamp(roughness, 0.08, 1.0); metallic = clamp(metallic, 0.0, 1.0);
-+    var ao = vertex_ao;
-+    if material.occlusion_layer != NO_LAYER {
-+        let uv = texture_uv(in.tex_coords, in.tex_coords_1, material.occlusion_transform, uniforms.time);
-+        ao *= mix(1.0, sample_linear_layer(material.occlusion_layer, uv, texture_uv_grad(material.occlusion_transform)).r, material.occlusion_strength);
-+    }
++    // Keep the mobile fragment small: material colors/textures and geometric
++    // lighting, without normal-map/PBR/IBL/cookie sampling or BRDF functions.
++    let N = normalize(select(-in.normal, in.normal, front));
++    let metallic = clamp(material.metallic, 0.0, 1.0);
 +    var emission = material.emissive_factor * material.emissive_strength;
 +    if material.emissive_layer != NO_LAYER {
 +        let uv = texture_uv(in.tex_coords, in.tex_coords_1, material.emissive_transform, uniforms.time);
 +        emission *= sample_srgb_layer(material.emissive_layer, uv, texture_uv_grad(material.emissive_transform)).rgb;
 +    }
-+    var color = base.rgb + emission;
++    var color = base.rgb;
 +    if material.unlit == 0u && uniforms.global_unlit <= 0.5 && uniforms.flat_color.a <= 0.0 {
-+        let V = normalize(uniforms.camera_position.xyz - in.world_pos);
-+        let NdotV = max(dot(N, V), 0.001);
-+        let F0 = mix(vec3<f32>(0.04), base.rgb, metallic);
-+        let Fenv = fresnelSchlick(NdotV, F0);
-+        let irradiance = textureSampleLevel(irradiance_map, irradiance_sampler, N, 0.0).rgb;
-+        let reflected = textureSampleLevel(prefiltered_env, prefiltered_sampler, reflect(-V, N), roughness * 4.0).rgb;
-+        let brdf = textureSampleLevel(brdf_lut, brdf_lut_sampler, vec2<f32>(NdotV, roughness), 0.0).rg;
-+        color = ((vec3<f32>(1.0) - Fenv) * (1.0 - metallic) * base.rgb * irradiance + reflected * (F0 * brdf.x + brdf.y)) * ao;
-+        for(var i = 0u; i < min(uniforms.num_lights.x, 8u); i++) {
++        var illumination = vec3<f32>(0.18 + 0.12 * max(N.y, 0.0));
++        for(var i = 0u; i < min(uniforms.num_lights.x, 4u); i++) {
 +            let light = lights[i];
 +            var direction = light.position.xyz - in.world_pos;
-+            if light.light_type == LIGHT_TYPE_DIRECTIONAL { direction = -light.direction.xyz; }
-+            let L = normalize(direction); let H = normalize(V + L);
-+            let NdotL = max(dot(N, L), 0.0);
-+            let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-+            let specular = DistributionGGX(N, H, roughness) * V_SmithGGXCorrelated(NdotV, NdotL, roughness) * F;
-+            let diffuse = (vec3<f32>(1.0) - F) * (1.0 - metallic) * base.rgb / PI;
-+            color += (diffuse + specular) * getLightIntensity(light, direction, in.world_pos) * NdotL;
++            var attenuation = 1.0;
++            if light.light_type == LIGHT_TYPE_DIRECTIONAL {
++                direction = -light.direction.xyz;
++            } else {
++                attenuation = getRangeAttenuation(light.range, length(direction));
++            }
++            if light.light_type == LIGHT_TYPE_SPOT {
++                attenuation *= getSpotAttenuation(direction, light.direction.xyz, light.outer_cone, light.inner_cone);
++            }
++            illumination += light.color.rgb * attenuation * max(dot(N, normalize(direction)), 0.0) / PI;
 +        }
-+        color += emission;
++        color *= illumination * vertex_ao;
 +    }
++    color += emission;
 +    if uniforms.fog_enabled != 0u {
 +        let depth = -(uniforms.view * vec4<f32>(in.world_pos, 1.0)).z;
 +        color = mix(color, uniforms.fog_color, clamp((depth - uniforms.fog_start) / max(uniforms.fog_end - uniforms.fog_start, 0.001), 0.0, 1.0));
@@ -4607,7 +4586,6 @@ index b1ccda5..e085038 100644
          );
  
          let oit_render_pipeline = build::Pipe::new(
-
 diff --git a/crates/plugins/draw/nightshade-wgpu-particles/src/systems/particles.rs b/crates/plugins/draw/nightshade-wgpu-particles/src/systems/particles.rs
 index 44a9323..8dc6913 100644
 --- a/crates/plugins/draw/nightshade-wgpu-particles/src/systems/particles.rs

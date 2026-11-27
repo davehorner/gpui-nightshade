@@ -102,10 +102,11 @@ a rendering failure is reported separately from copy/readback.
 
 Mobile browsers and `?safe=1` select a compact material profile; the full
 profile remains available explicitly.
-The profile retains skinning/morphs, vertex/instance colors, base/normal/emissive
-textures, metallic/roughness, occlusion, alpha mask/dither/blend and basic IBL
-with up to eight direct lights. Advanced lobes, volume/transmission, area-light
-shading and material shadows are omitted. Desktop browsers and native apps keep
+The profile retains skinning/morphs, vertex/instance colors, base and emissive
+textures, alpha mask/dither/blend, geometric normals and up to four diffuse
+point/spot/directional lights. It uses simple ambient lighting; normal/occlusion
+maps, PBR reflections, IBL, light cookies and advanced material lobes are omitted
+to reduce fragment compilation complexity. Desktop browsers and native apps keep
 the full shaders. `?materials=compact` or `?materials=full` overrides the browser
 selection; diagnostics record when mobile material shaders are selected.
 
