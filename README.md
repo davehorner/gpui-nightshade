@@ -97,6 +97,9 @@ Browser particle pools hold at most 32,768 particles and sixteen 128-square text
 The Nightshade paint image pool uses thirty-two 256-square layers. Together these
 three pools request 13 MiB instead of about 314 MiB, including in empty scenes;
 native particle and paint budgets are unchanged.
+GPUI reuses empty web image-atlas textures as readback frames replace their image
+keys; it avoids allocating a fresh atlas texture for each presented frame. Native
+atlas eviction is unchanged.
 Startup waits for GPU rendering completion before copying the first frame, so
 a rendering failure is reported separately from copy/readback.
 
