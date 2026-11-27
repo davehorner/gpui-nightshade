@@ -231,6 +231,10 @@ pub trait ViewportHost {
         Ok(())
     }
     fn set_camera(&mut self, pose: CameraPose);
+    /// Pinch center in normalized tile coordinates, plus that tile's aspect ratio.
+    fn set_camera_with_zoom_anchor(&mut self, pose: CameraPose, _anchor: Option<[f32; 3]>) {
+        self.set_camera(pose);
+    }
     /// Optional same-scene camera layout; simple scene hosts retain one view.
     /// Actual host layout/focus, including changes made through remote controls.
     fn camera_layout_state(&self) -> Option<(crate::views::CameraLayout, usize)> {

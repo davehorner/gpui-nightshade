@@ -100,6 +100,8 @@ impl NightshadeViewport {
                 pitch: 0.35,
                 distance: 4.,
                 target: [0.; 3],
+                #[cfg(target_arch = "wasm32")]
+                zoom_anchor: None,
                 pick: None,
             },
             camera_poses: [[0.6, 0.35, 4., 0., 0., 0.]; 4],
@@ -145,6 +147,10 @@ impl NightshadeViewport {
         }
         self.cancel_input();
         self.request.yaw = pose.yaw;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.request.zoom_anchor = None;
+        }
         self.request.pitch = pose.pitch.clamp(-1.5, 1.5);
         self.request.distance = pose.distance.clamp(0.01, 200.);
         self.request.target = pose.target;
@@ -358,6 +364,21 @@ impl Render for NightshadeViewport {
                                 if delta.len() == 8 && delta[7] != 0. {
                                     view.cancel_input();
                                     view.focus_at(point(px(delta[5]), px(delta[6])));
+                                    let local = view
+                                        .local_position(point(px(delta[5]), px(delta[6])), true);
+                                    view.request.zoom_anchor = local.and_then(|p| {
+                                        let tile = view
+                                            .request
+                                            .layout
+                                            .rects(view.request.width, view.request.height)
+                                            .get(view.request.active_view)
+                                            .copied()?;
+                                        Some([
+                                            (p[0] - tile.x as f32) / tile.width as f32,
+                                            (p[1] - tile.y as f32) / tile.height as f32,
+                                            tile.width as f32 / tile.height as f32,
+                                        ])
+                                    });
                                     view.request.target[0] -=
                                         delta[0] * view.request.distance * 0.002;
                                     view.request.target[1] +=
@@ -469,6 +490,10 @@ impl Render for NightshadeViewport {
                 }
             }))
             .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    this.request.zoom_anchor = None;
+                }
                 this.focus_at(event.position);
                 let delta = event.delta.pixel_delta(px(16.)).y;
                 this.request.distance =

@@ -199,6 +199,43 @@ impl ViewportHost for ViewerRuntime {
                 - nightshade::prelude::nalgebra_glm::Vec3::from(previous.target);
         }
     }
+    fn set_camera_with_zoom_anchor(&mut self, pose: CameraPose, anchor: Option<[f32; 3]>) {
+        use nightshade_camera::{
+            components::{Camera, Projection},
+            resources::ActiveCamera,
+        };
+        use nightshade_camera_controller::contract::PanOrbitCamera;
+        let camera = self.world.res::<ActiveCamera>().0;
+        let old_radius = camera
+            .and_then(|c| self.world.storage.get::<PanOrbitCamera>(c))
+            .map(|o| o.target_radius);
+        self.set_camera(pose);
+        if let (Some(camera), Some(old_radius), Some(anchor)) = (camera, old_radius, anchor) {
+            let projection = self
+                .world
+                .storage
+                .get::<Camera>(camera)
+                .map(|c| c.projection);
+            if let Some(Projection::Perspective(projection)) = projection
+                && let Some(orbit) = self.world.storage.get_mut::<PanOrbitCamera>(camera)
+            {
+                let anchor = [
+                    anchor[0],
+                    anchor[1],
+                    projection.aspect_ratio.unwrap_or(anchor[2]),
+                ];
+                let shift = gpui_nightshade::input::zoom_anchor_shift(
+                    old_radius,
+                    orbit.target_radius,
+                    orbit.target_yaw,
+                    orbit.target_pitch,
+                    projection.y_fov_rad,
+                    anchor,
+                );
+                orbit.target_focus += nightshade::prelude::nalgebra_glm::Vec3::from(shift);
+            }
+        }
+    }
     fn camera_layout_state(&self) -> Option<(gpui_nightshade::views::CameraLayout, usize)> {
         Some((self.views.layout, self.views.active))
     }

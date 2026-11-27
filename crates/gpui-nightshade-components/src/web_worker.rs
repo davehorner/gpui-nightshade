@@ -28,6 +28,7 @@ pub struct ViewRequest {
     pub pitch: f32,
     pub distance: f32,
     pub target: [f32; 3],
+    pub zoom_anchor: Option<[f32; 3]>,
     pub pick: Option<(u32, u32, u64)>,
 }
 #[derive(Clone)]
@@ -60,6 +61,7 @@ impl Worker {
                 pitch: 0.35,
                 distance: 4.,
                 target: [0.; 3],
+                zoom_anchor: None,
                 pick: None,
             },
             input: Default::default(),
@@ -148,12 +150,12 @@ impl Worker {
                         )?);
                     }
                     host.set_camera_layout(request.layout, request.active_view)?;
-                    host.set_camera(CameraPose {
+                    host.set_camera_with_zoom_anchor(CameraPose {
                         yaw: request.yaw,
                         pitch: request.pitch,
                         distance: request.distance,
                         target: request.target,
-                    });
+                    }, request.zoom_anchor);
                     if let Some((x, y, _)) = request.pick {
                         host.request_pick(
                             ((u64::from(x)*u64::from(size.0)/u64::from(request.width.max(1))) as u32).min(size.0-1),

@@ -1,3 +1,20 @@
+/// Keep the point on the camera's focus plane at the same screen location during zoom.
+pub fn zoom_anchor_shift(
+    old_radius: f32,
+    new_radius: f32,
+    yaw: f32,
+    pitch: f32,
+    y_fov: f32,
+    anchor: [f32; 3],
+) -> [f32; 3] {
+    let span = (old_radius - new_radius) * (y_fov * 0.5).tan();
+    let x = (2. * anchor[0] - 1.) * anchor[2] * span;
+    let y = (1. - 2. * anchor[1]) * span;
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    [cy * x - sy * sp * y, cp * y, -sy * x - cy * sp * y]
+}
+
 /// Convert a pointer from window logical pixels into viewport-local physical pixels.
 pub fn local_pointer(
     pointer: [f32; 2],
@@ -107,6 +124,30 @@ mod pointer_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pinch_anchor_stays_at_its_projected_position() {
+        for (yaw, pitch) in [(0., 0.), (1.2, 0.8), (-2., -0.7)] {
+            for anchor in [[0.5, 0.5, 1.], [0.8, 0.2, 0.7], [0.1, 0.9, 2.]] {
+                let old = 12.;
+                let new = 3.;
+                let fov = std::f32::consts::FRAC_PI_4;
+                let point = zoom_anchor_shift(old, 0., yaw, pitch, fov, anchor);
+                let shift = zoom_anchor_shift(old, new, yaw, pitch, fov, anchor);
+                let (sy, cy) = yaw.sin_cos();
+                let (sp, cp) = pitch.sin_cos();
+                let right = [cy, 0., -sy];
+                let up = [-sy * sp, cp, -cy * sp];
+                let dot = |v: [f32; 3]| (0..3).map(|i| (point[i] - shift[i]) * v[i]).sum::<f32>();
+                let span = new * (fov * 0.5).tan();
+                assert!((0.5 + dot(right) / (2. * span * anchor[2]) - anchor[0]).abs() < 1e-5);
+                assert!((0.5 - dot(up) / (2. * span) - anchor[1]).abs() < 1e-5);
+                let reverse = zoom_anchor_shift(new, old, yaw, pitch, fov, anchor);
+                for i in 0..3 {
+                    assert!((shift[i] + reverse[i]).abs() < 1e-5);
+                }
+            }
+        }
+    }
     #[test]
     fn dpi_and_capture() {
         assert_eq!(
