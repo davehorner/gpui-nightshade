@@ -3,6 +3,15 @@ use gpui_kit::*;
 use gpui_nightshade::presentation::{FrameInfo, PresentationStatus};
 use std::{sync::Arc, time::Duration};
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(module = "/src/touch.mjs")]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = viewportTouchBounds)]
+    fn viewport_touch_bounds(x: f32, y: f32, width: f32, height: f32);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = clearViewportTouch)]
+    fn clear_viewport_touch();
+}
+
 pub struct NightshadeViewport {
     worker: Worker,
     image: Option<ViewportFrame>,
@@ -49,6 +58,8 @@ impl NightshadeViewport {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.on_release(|view, cx| {
+            #[cfg(target_arch = "wasm32")]
+            clear_viewport_touch();
             if let Some(image) = view.image.take() {
                 cx.drop_image(image.image, None);
             }
@@ -371,11 +382,7 @@ impl Render for NightshadeViewport {
             .size_full()
             .overflow_hidden()
             .on_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                let camera_button = if this.scene_input {
-                    MouseButton::Right
-                } else {
-                    MouseButton::Left
-                };
+                let camera_button = MouseButton::Right;
                 if event.button != MouseButton::Left && event.button != camera_button {
                     return;
                 }
@@ -436,6 +443,11 @@ impl Render for NightshadeViewport {
                 canvas(
                     move |bounds, window, cx| {
                         let scale = window.scale_factor();
+                        #[cfg(target_arch = "wasm32")]
+                        viewport_touch_bounds(
+                            bounds.origin.x.into(), bounds.origin.y.into(),
+                            bounds.size.width.into(), bounds.size.height.into(),
+                        );
                         let _ = entity.update(cx, |this, _| {
                             if (this.bounds != bounds || this.scale != scale)
                                 && this.drag_button.is_some()
