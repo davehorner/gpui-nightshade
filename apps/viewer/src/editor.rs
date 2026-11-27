@@ -819,7 +819,11 @@ impl Render for Editor {
         );
         let viewport_visible = self.dock.viewport_visible(cx);
         self.viewport.update(cx, |viewport, cx| {
-            viewport.set_visible(viewport_visible, cx)
+            viewport.set_visible(viewport_visible, cx);
+            viewport.set_object_drag_enabled(
+                snapshot.as_ref().is_some_and(|s|
+                    s.selection.selected.is_some() && s.gizmo.enabled),
+            );
         });
         if let Some(snapshot) = &snapshot {
             let selected = snapshot.selection.selected.map(|e| (e.id, e.generation));

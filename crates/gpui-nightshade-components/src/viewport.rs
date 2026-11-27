@@ -34,6 +34,8 @@ pub struct NightshadeViewport {
     last_pointer: Option<Point<Pixels>>,
     drag_button: Option<MouseButton>,
     scene_input: bool,
+    object_drag_enabled: bool,
+    touch_dragging: bool,
     visibility: crate::visibility::PresentationVisibility,
     input_subscriptions: Option<Vec<Subscription>>,
     focus: FocusHandle,
@@ -108,6 +110,8 @@ impl NightshadeViewport {
             last_pointer: None,
             drag_button: None,
             scene_input: false,
+            object_drag_enabled: false,
+            touch_dragging: false,
             visibility: Default::default(),
             input_subscriptions: None,
             bounds: Bounds::default(),
@@ -216,6 +220,9 @@ impl NightshadeViewport {
         self.scene_input = true;
         self
     }
+    pub fn set_object_drag_enabled(&mut self, enabled: bool) {
+        self.object_drag_enabled = enabled;
+    }
     /// Set container/panel visibility while retaining the scene worker and simulation.
     /// Presentation also requires the owning platform window to be visible.
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -277,6 +284,7 @@ impl NightshadeViewport {
         }
     }
     fn cancel_input(&mut self) {
+        self.touch_dragging = false;
         if self.scene_input {
             self.worker.cancel_input();
         }
@@ -538,8 +546,77 @@ impl Render for NightshadeViewport {
                             this.focus_view(this.request.active_view.min(count - 1));
                             this.worker.request(this.request);
                         });
+                        window.insert_hitbox(bounds, HitboxBehavior::Normal)
                     },
-                    move |bounds, (), window, cx| {
+                    move |bounds, hitbox, window, cx| {
+                        let touch_entity = paint_entity.clone();
+                        window.on_mouse_event(move |event: &TouchDragEvent, phase, window, cx| {
+                            if phase != DispatchPhase::Bubble {
+                                return;
+                            }
+                            let claimed = touch_entity
+                                .update(cx, |view, cx| {
+                                    match event.phase {
+                                        TouchPhase::Started => {
+                                            if !view.scene_input
+                                                || !view.object_drag_enabled
+                                                || !hitbox.is_hovered(window)
+                                                || view
+                                                    .local_position(event.start_position, false)
+                                                    .is_none()
+                                            {
+                                                return false;
+                                            }
+                                            view.cancel_input();
+                                            view.focus_at(event.start_position);
+                                            window.focus(&view.focus, cx);
+                                            view.touch_dragging = true;
+                                            view.drag_button = Some(MouseButton::Left);
+                                            view.scene_event(
+                                                gpui_nightshade::input::PointerPhase::Press,
+                                                event.start_position,
+                                                Modifiers::default(),
+                                                false,
+                                            );
+                                        }
+                                        TouchPhase::Moved if view.touch_dragging => {
+                                            view.scene_event(
+                                                gpui_nightshade::input::PointerPhase::Move,
+                                                event.position,
+                                                Modifiers::default(),
+                                                true,
+                                            );
+                                        }
+                                        TouchPhase::Ended if view.touch_dragging => {
+                                            view.scene_event(
+                                                gpui_nightshade::input::PointerPhase::Move,
+                                                event.position,
+                                                Modifiers::default(),
+                                                true,
+                                            );
+                                            view.scene_event(
+                                                gpui_nightshade::input::PointerPhase::Release,
+                                                event.position,
+                                                Modifiers::default(),
+                                                true,
+                                            );
+                                            view.touch_dragging = false;
+                                            view.drag_button = None;
+                                            view.last_pointer = None;
+                                        }
+                                        TouchPhase::Cancelled if view.touch_dragging => {
+                                            view.cancel_input()
+                                        }
+                                        _ => return false,
+                                    }
+                                    true
+                                })
+                                .unwrap_or(false);
+                            if claimed {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        });
                         let move_entity = paint_entity.clone();
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {

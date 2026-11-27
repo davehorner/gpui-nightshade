@@ -2017,19 +2017,53 @@ index 031ad9e..d867b5f 100644
 +    }
 +}
 diff --git a/apps/viewer/src/systems/gizmo.rs b/apps/viewer/src/systems/gizmo.rs
-index eaad5e2..45f98aa 100644
+index eaad5e2..f14b14b 100644
 --- a/apps/viewer/src/systems/gizmo.rs
 +++ b/apps/viewer/src/systems/gizmo.rs
-@@ -6,7 +6,7 @@ use nightshade_platform::prelude::Input;
+@@ -6,15 +6,41 @@ use nightshade_platform::prelude::Input;
  use nightshade_platform::winit::keyboard::KeyCode;
  use nightshade_render::resources::viewport::Viewport;
  use nightshade_scene::contract::GlobalTransform;
 -use nightshade_ui::resources::{RetainedUiInteraction, RetainedUiRuntime};
-+
  
  use crate::commands::gizmo::{
      claim, continue_drag, draw_handles, end_drag, hide_handles, start_drag,
-@@ -23,8 +23,7 @@ pub fn update_gizmo(
+ };
++use crate::data::GizmoHandle;
+ use crate::queries::gizmo::{basis_of, group_origin, hit_handle, pointer_ray};
+ use crate::queries::selection::group;
+ use crate::resources::ViewerResources;
+ 
++fn hits_selected_object(
++    storage: &nightshade::ecs::Storage,
++    group: &[Entity],
++    ray: nightshade_picking::contract::PickingRay,
++) -> bool {
++    let rows = storage.query_ref::<(
++        &nightshade_render::components::BoundingVolume,
++        &GlobalTransform,
++        Option<&nightshade_scene::contract::primitives::Visibility>,
++    )>();
++    let Some(hit) = nightshade_picking::queries::pick_closest_entity(rows, ray) else {
++        return false;
++    };
++    let mut entity = hit.entity;
++    for _ in 0..64 {
++        if group.contains(&entity) {
++            return true;
++        }
++        let Some(parent) = storage.get::<nightshade::ecs::ChildOf>(entity) else {
++            break;
++        };
++        entity = parent.0;
++    }
++    false
++}
++
+ const SCREEN_SIZE: f32 = 0.28;
+ 
+ pub fn update_gizmo(
+@@ -23,8 +49,7 @@ pub fn update_gizmo(
      window: Res<Window>,
      viewport: Res<Viewport>,
      active_camera: Res<ActiveCamera>,
@@ -2039,15 +2073,34 @@ index eaad5e2..45f98aa 100644
      mut capture: ResMut<nightshade_platform::contract::input_capture::InputCapture>,
      mut commands: Commands,
      storage: &mut nightshade::ecs::Storage,
-@@ -73,7 +72,7 @@ pub fn update_gizmo(
+@@ -72,8 +97,7 @@ pub fn update_gizmo(
+         || input.keyboard.is_key_pressed(KeyCode::ControlLeft)
          || input.keyboard.is_key_pressed(KeyCode::ControlRight);
  
-     let over_interface =
+-    let over_interface =
 -        nightshade_ui::ui_pointer_target_of(&runtime, &interaction, storage).is_some();
-+        frontend.pointer_over_ui;
++    let over_interface = frontend.pointer_over_ui;
  
      if viewer.gizmo.drag.is_some() {
          if input.mouse.state.contains(MouseState::LEFT_JUST_RELEASED) {
+@@ -85,10 +109,13 @@ pub fn update_gizmo(
+         viewer.gizmo.hovered = (!over_interface)
+             .then(|| hit_handle(viewer.gizmo.mode, &basis, &ray, size))
+             .flatten();
+-        if input.mouse.state.contains(MouseState::LEFT_JUST_PRESSED)
+-            && let Some(handle) = viewer.gizmo.hovered
+-        {
+-            start_drag(viewer, storage, &group, &basis, &ray, handle);
++        if input.mouse.state.contains(MouseState::LEFT_JUST_PRESSED) && !over_interface {
++            let handle = viewer.gizmo.hovered.or_else(|| {
++                hits_selected_object(storage, &group, ray).then_some(GizmoHandle::Center)
++            });
++            if let Some(handle) = handle {
++                start_drag(viewer, storage, &group, &basis, &ray, handle);
++            }
+         }
+     }
+ 
 diff --git a/apps/viewer/src/systems/input.rs b/apps/viewer/src/systems/input.rs
 index e133d45..c18dfdc 100644
 --- a/apps/viewer/src/systems/input.rs
@@ -4679,3 +4732,65 @@ index 7c307c1..e326e49 100644
  pub const TEXTURE_MAX_LAYERS: u32 = 128;
  
  pub struct ImageLayerUpload {
+
+diff --git a/apps/viewer/src/commands/gizmo.rs b/apps/viewer/src/commands/gizmo.rs
+index 580d41f..3354b6c 100644
+--- a/apps/viewer/src/commands/gizmo.rs
++++ b/apps/viewer/src/commands/gizmo.rs
+@@ -117,18 +117,27 @@ pub fn continue_drag(
+             }
+         }
+         GizmoMode::Rotate => {
+-            let GizmoHandle::Axis(index) = drag.handle else {
+-                return;
++            let (normal, radians) = match drag.handle {
++                GizmoHandle::Axis(index) => {
++                    let normal = basis.axes[index];
++                    (
++                        normal,
++                        signed_angle(drag.start_point - drag.origin, point - drag.origin, normal),
++                    )
++                }
++                GizmoHandle::Center => {
++                    let delta = point - drag.start_point;
++                    if delta.norm() < 1.0e-6 {
++                        return;
++                    }
++                    (
++                        drag.normal.cross(&delta).normalize(),
++                        delta.norm() / size.max(1.0e-4),
++                    )
++                }
++                _ => return,
+             };
+-            let from = drag.start_point - drag.origin;
+-            let to = point - drag.origin;
+-            let normal = basis.axes[index];
+-            let angle = snapped(
+-                signed_angle(from, to, normal).to_degrees(),
+-                SNAP_ANGLE,
+-                snap,
+-            )
+-            .to_radians();
++            let angle = snapped(radians.to_degrees(), SNAP_ANGLE, snap).to_radians();
+             let world_step = nalgebra_glm::quat_angle_axis(angle, &normal);
+             for start in &drag.starts {
+                 let step = nalgebra_glm::quat_angle_axis(angle, &local_axis(&start.frame, normal));
+@@ -168,8 +177,15 @@ pub fn continue_drag(
+                     factors
+                 }
+                 GizmoHandle::Center => {
+-                    let factor =
+-                        snapped(grow_factor(&drag, point, reach), SNAP_SCALE, snap).max(1.0e-3);
++                    let reference = if drag.normal.y.abs() < 0.95 {
++                        Vec3::y()
++                    } else {
++                        Vec3::z()
++                    };
++                    let right = reference.cross(&drag.normal).normalize();
++                    let up = drag.normal.cross(&right).normalize();
++                    let step = (point - drag.start_point).dot(&(right + up)) / reach;
++                    let factor = snapped(1.0 + step, SNAP_SCALE, snap).max(1.0e-3);
+                     [factor; 3]
+                 }
+             };

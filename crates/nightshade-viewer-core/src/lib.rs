@@ -517,6 +517,98 @@ mod tests {
         );
     }
     #[test]
+    fn selected_object_body_drag_uses_each_tool_and_one_undo_entry() {
+        use gpui_nightshade::input::{PointerInput, PointerPhase};
+        for mode in [GizmoMode::Move, GizmoMode::Rotate, GizmoMode::Scale] {
+            let mut app = viewer::core::compose(
+                ViewerArguments {
+                    no_agent: true,
+                    preview: true,
+                    ..Default::default()
+                },
+                ViewerCorePlugin {
+                    persist_settings: false,
+                    remote_catalogs: false,
+                },
+            );
+            app.world
+                .res_mut::<nightshade_platform::contract::window::Window>()
+                .cached_viewport_size = Some((640, 480));
+            app.stages.apply_orderings();
+            app.startup.run(&mut app.world);
+            configure_editor_camera(&mut app.world);
+            viewer::core::submit(
+                &mut app.world,
+                ViewerAction::AddPrimitive(PrimitiveKind::Cube),
+            )
+            .unwrap();
+            if mode != GizmoMode::Move {
+                viewer::core::submit(&mut app.world, ViewerAction::SetGizmoMode(mode)).unwrap();
+            }
+            for _ in 0..3 {
+                app.world.increment_tick();
+                app.stages.run(&mut app.world);
+            }
+            let before = viewer::core::snapshot(&app.world).selection;
+            for (phase, position) in [
+                (PointerPhase::Press, [310., 250.]),
+                (PointerPhase::Move, [330., 245.]),
+                (PointerPhase::Release, [330., 245.]),
+            ] {
+                apply_pointer_input(
+                    &mut app.world,
+                    PointerInput {
+                        phase,
+                        position,
+                        control: false,
+                        shift: false,
+                    },
+                );
+                app.world.increment_tick();
+                app.stages.run(&mut app.world);
+            }
+            let after = viewer::core::snapshot(&app.world).selection;
+            match mode {
+                GizmoMode::Move => assert_ne!(after.translation, before.translation, "body Move"),
+                GizmoMode::Rotate => assert_ne!(after.rotation, before.rotation, "body Rotate"),
+                GizmoMode::Scale => assert_ne!(after.scale, before.scale, "body Scale"),
+            }
+            viewer::core::submit(&mut app.world, ViewerAction::Undo).unwrap();
+            app.world.increment_tick();
+            app.stages.run(&mut app.world);
+            let undone = viewer::core::snapshot(&app.world).selection;
+            assert_eq!(undone.translation, before.translation);
+            assert_eq!(undone.rotation, before.rotation);
+            assert_eq!(undone.scale, before.scale);
+            let history = viewer::core::snapshot(&app.world);
+            for (phase, position) in [
+                (PointerPhase::Press, [310., 250.]),
+                (PointerPhase::Move, [330., 245.]),
+                (PointerPhase::Cancel, [0., 0.]),
+            ] {
+                apply_pointer_input(
+                    &mut app.world,
+                    PointerInput {
+                        phase,
+                        position,
+                        control: false,
+                        shift: false,
+                    },
+                );
+                app.world.increment_tick();
+                app.stages.run(&mut app.world);
+            }
+            let cancelled = viewer::core::snapshot(&app.world);
+            assert_eq!(cancelled.selection.translation, before.translation);
+            assert_eq!(cancelled.selection.rotation, before.rotation);
+            assert_eq!(cancelled.selection.scale, before.scale);
+            assert_eq!(
+                (cancelled.can_undo, cancelled.can_redo),
+                (history.can_undo, history.can_redo)
+            );
+        }
+    }
+    #[test]
     fn bridge_bounds_pending_actions_and_preserves_fifo() {
         let connection = ViewerConnection::default();
         for index in 0..FRONTEND_CAPACITY {
