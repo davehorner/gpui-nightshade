@@ -96,8 +96,8 @@ lookup buffers and environment-lighting filter sizes/sample counts are also boun
 Startup waits for GPU rendering completion before copying the first frame, so
 a rendering failure is reported separately from copy/readback.
 
-Mobile browsers and `?safe=1` select compact material shaders to avoid the
-Adreno Vulkan pipeline-compiler failure seen with the full opaque PBR shader.
+Mobile browsers and `?safe=1` select a compact material profile; the full
+profile remains available explicitly.
 The profile retains skinning/morphs, vertex/instance colors, base/normal/emissive
 textures, metallic/roughness, occlusion, alpha mask/dither/blend and basic IBL
 with up to eight direct lights. Advanced lobes, volume/transmission, area-light
@@ -108,3 +108,10 @@ selection; diagnostics record when mobile material shaders are selected.
 `mesh-check.html` reproduces the captured compact opaque mesh pipeline without
 WASM/audio and compares actual vertex/fragment stages, target state and sampler
 variants using small zero-filled resources. It preserves per-case GPU errors.
+
+Browser mesh shaders use perspective varyings with explicit reconstruction of
+screen-linear UVs and OIT depth. An Adreno 6xx pipeline reproduction fails with
+linear interpolation qualifiers and passes with perspective qualifiers. The
+correction preserves affine UV/depth behavior; native interpolation is unchanged.
+`interpolation-check.html` compares the correction against hardware-linear
+interpolation at different vertex depths (at most one UNORM byte difference).
