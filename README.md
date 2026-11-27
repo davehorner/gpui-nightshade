@@ -93,6 +93,10 @@ panels. Browser shadow targets use a smaller budget; native targets are unchange
 
 Browser SDF caching uses an 8 MiB atlas instead of the desktop 343 MiB atlas;
 lookup buffers and environment-lighting filter sizes/sample counts are also bounded.
+Browser particle pools hold at most 32,768 particles and sixteen 128-square textures.
+The Nightshade paint image pool uses thirty-two 256-square layers. Together these
+three pools request 13 MiB instead of about 314 MiB, including in empty scenes;
+native particle and paint budgets are unchanged.
 Startup waits for GPU rendering completion before copying the first frame, so
 a rendering failure is reported separately from copy/readback.
 
@@ -110,8 +114,9 @@ WASM/audio and compares actual vertex/fragment stages, target state and sampler
 variants using small zero-filled resources. It preserves per-case GPU errors.
 
 Browser mesh shaders use perspective varyings with explicit reconstruction of
-screen-linear UVs and OIT depth. An Adreno 6xx pipeline reproduction fails with
-linear interpolation qualifiers and passes with perspective qualifiers. The
-correction preserves affine UV/depth behavior; native interpolation is unchanged.
+screen-linear UVs and OIT depth. Compact opaque materials do not consume affine
+UVs and skip their vertex correction. Adreno 6xx standalone variants pass while
+the full app still reports pipeline creation failures; mobile startup remains
+unresolved. Native interpolation is unchanged.
 `interpolation-check.html` compares the correction against hardware-linear
 interpolation at different vertex depths (at most one UNORM byte difference).

@@ -4607,3 +4607,54 @@ index b1ccda5..e085038 100644
          );
  
          let oit_render_pipeline = build::Pipe::new(
+
+diff --git a/crates/plugins/draw/nightshade-wgpu-particles/src/systems/particles.rs b/crates/plugins/draw/nightshade-wgpu-particles/src/systems/particles.rs
+index 44a9323..8dc6913 100644
+--- a/crates/plugins/draw/nightshade-wgpu-particles/src/systems/particles.rs
++++ b/crates/plugins/draw/nightshade-wgpu-particles/src/systems/particles.rs
+@@ -12,6 +12,9 @@ use nightshade_wgpu_geometry::backend::OverlaySubPass;
+ use std::collections::HashMap;
+ use wgpu::util::DeviceExt;
+ 
++#[cfg(target_arch = "wasm32")]
++const MAX_PARTICLES: u32 = 32_768;
++#[cfg(not(target_arch = "wasm32"))]
+ const MAX_PARTICLES: u32 = 1_000_000;
+ const MAX_EMITTERS: u32 = 512;
+ const WORKGROUP_SIZE: u32 = 256;
+@@ -116,6 +119,9 @@ struct CameraUniforms {
+     camera_up: [f32; 4],
+ }
+ 
++#[cfg(target_arch = "wasm32")]
++const PARTICLE_TEXTURE_SIZE: u32 = 128;
++#[cfg(not(target_arch = "wasm32"))]
+ const PARTICLE_TEXTURE_SIZE: u32 = 512;
+ 
+ fn layer_pixels(upload: &ParticleTextureUpload) -> Option<std::borrow::Cow<'_, [u8]>> {
+@@ -134,6 +140,9 @@ fn layer_pixels(upload: &ParticleTextureUpload) -> Option<std::borrow::Cow<'_, [
+     );
+     Some(std::borrow::Cow::Owned(scaled.into_raw()))
+ }
++#[cfg(target_arch = "wasm32")]
++const MAX_PARTICLE_TEXTURES: u32 = 16;
++#[cfg(not(target_arch = "wasm32"))]
+ const MAX_PARTICLE_TEXTURES: u32 = 64;
+ 
+ pub struct ParticlePass {
+
+diff --git a/crates/plugins/describe/nightshade-paint/src/resources.rs b/crates/plugins/describe/nightshade-paint/src/resources.rs
+index 7c307c1..e326e49 100644
+--- a/crates/plugins/describe/nightshade-paint/src/resources.rs
++++ b/crates/plugins/describe/nightshade-paint/src/resources.rs
+@@ -1,4 +1,10 @@
++#[cfg(target_arch = "wasm32")]
++pub const TEXTURE_LAYER_SIZE: u32 = 256;
++#[cfg(not(target_arch = "wasm32"))]
+ pub const TEXTURE_LAYER_SIZE: u32 = 512;
++#[cfg(target_arch = "wasm32")]
++pub const TEXTURE_MAX_LAYERS: u32 = 32;
++#[cfg(not(target_arch = "wasm32"))]
+ pub const TEXTURE_MAX_LAYERS: u32 = 128;
+ 
+ pub struct ImageLayerUpload {
