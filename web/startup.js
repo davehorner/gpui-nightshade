@@ -15,7 +15,7 @@ export function startup(boot,name,build) {
   start.textContent='Start app';start.hidden=true;copy.textContent='Copy diagnostics';probe.textContent='Test GPU';probe.disabled=true;
   for(const button of [start,copy,probe]){button.style.cssText='font:inherit;padding:8px 12px';controls.append(button);}
   boot.style.cssText+=';z-index:2147483647;overflow:auto';boot.replaceChildren(status,controls,details);
-  function record(message){state.lines.push(typeof message==='string'?message:JSON.stringify(message));report.textContent=JSON.stringify(state,null,2);}
+  function record(message){if(message?.pipeline){state.pipelines??=[];const i=state.pipelines.findIndex(p=>p.id===message.pipeline.id);if(i<0)state.pipelines.push(message.pipeline);else state.pipelines[i]=message.pipeline;}state.lines.push(typeof message==='string'?message:JSON.stringify(message));report.textContent=JSON.stringify(state,null,2);}
   function phase(message){state.phase=message;status.textContent=`${name}: ${message}`;record(message);try{localStorage.setItem(key,JSON.stringify({build,phase:message,pending:!waitingForUser,wasmMemoryBytes:state.wasmMemoryBytes,checkpoints:state.lines.slice(-12),time:Date.now()}));}catch{}}
   function fail(error){state.error??=String(error?.stack||error);boot.hidden=false;status.textContent=`${name} could not start.\n${state.error}`;details.open=true;record(String(error));try{localStorage.setItem(key,JSON.stringify({build,phase:state.phase,pending:false,error:state.error}));}catch{}}
   let appReady=false,frameReady=false,waitingForUser=false;
@@ -48,6 +48,7 @@ export function startup(boot,name,build) {
       const adapter=await navigator.gpu.requestAdapter();
       if(adapter)record(JSON.stringify({features:[...adapter.features],info:adapter.info?Object.fromEntries(["vendor","architecture","device","description"].map(key=>[key,adapter.info[key]])):null,limits:Object.fromEntries(['maxBindGroups','maxTextureDimension2D','maxTextureArrayLayers','maxBufferSize','maxStorageBufferBindingSize','maxStorageBuffersPerShaderStage'].map(key=>[key,adapter.limits[key]]))}));
       validateAdapter(adapter);probe.disabled=false;
+      if(params.has('pipeline')){const {installPipelineDiagnostics}=await import('./pipeline-diagnostics.js?v=1');installPipelineDiagnostics(record);const button=document.createElement('button');button.textContent='Copy pipeline';controls.append(button);button.onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify({name,build,error:state.error,pipelines:state.pipelines},null,2));button.textContent='Copied';}catch{details.open=true;}};}
       probe.onclick=async()=>{
         probe.disabled=true;let device;
         try{
