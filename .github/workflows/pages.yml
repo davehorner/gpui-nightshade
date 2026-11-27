@@ -25,15 +25,6 @@ jobs:
           rustup toolchain install nightly-2026-10-31 --profile minimal --target wasm32-unknown-unknown
       - name: Initialize pinned source dependencies
         run: python scripts/prepare.py
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-pages-full-target
-          # Cargo downloads stay in rust-cache; full build outputs are cached below.
-          cache-targets: false
-          cache-all-crates: true
-          workspaces: |
-            . -> target
-      # Save before rust-cache's post-step prunes local/path crate artifacts.
       - name: Cache complete Rust build outputs
         uses: actions/cache@v4
         with:
