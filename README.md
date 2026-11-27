@@ -95,3 +95,12 @@ Browser SDF caching uses an 8 MiB atlas instead of the desktop 343 MiB atlas;
 lookup buffers and environment-lighting filter sizes/sample counts are also bounded.
 Startup waits for GPU rendering completion before copying the first frame, so
 a rendering failure is reported separately from copy/readback.
+
+Mobile browsers and `?safe=1` select compact material shaders to avoid the
+Adreno Vulkan pipeline-compiler failure seen with the full opaque PBR shader.
+The profile retains skinning/morphs, vertex/instance colors, base/normal/emissive
+textures, metallic/roughness, occlusion, alpha mask/dither/blend and basic IBL
+with up to eight direct lights. Advanced lobes, volume/transmission, area-light
+shading and material shadows are omitted. Desktop browsers and native apps keep
+the full shaders. `?materials=compact` or `?materials=full` overrides the browser
+selection; diagnostics record when mobile material shaders are selected.
