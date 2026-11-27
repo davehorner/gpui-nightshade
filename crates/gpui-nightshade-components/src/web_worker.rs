@@ -9,6 +9,11 @@ use gpui_nightshade::{
     wgpu,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
+#[wasm_bindgen::prelude::wasm_bindgen(module = "/src/touch.js")]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = reportViewportSelection)]
+    fn report_viewport_selection(id: f64);
+}
 #[wasm_bindgen::prelude::wasm_bindgen(
     inline_js = "export function reportNightshadeStage(stage,message) { window.dispatchEvent(new CustomEvent('nightshade-stage',{detail:{stage,message}})); } export function gpuWaitNow() { return performance.now(); }"
 )]
@@ -115,21 +120,17 @@ impl Worker {
                         return Ok::<(), Box<dyn std::error::Error>>(());
                     };
                     if let Some(error)=lost.lock().unwrap().take(){return Err(error.into());}
-                    let (request, visible, input) = {
-                        let mut state = shared.borrow_mut();
+                    let (request, visible) = {
+                        let state = shared.borrow();
                         if state.quit {
                             return Ok(());
                         }
-                        let mut input = Vec::new();
-                        while let Some(event) = state.input.pop() {
-                            input.push(event);
-                        }
-                        (state.request, state.status.visible, input)
+                        (state.request, state.status.visible)
                     };
-                    for event in input {
-                        host.pointer_input(event);
-                    }
                     if !visible {
+                        if let Some(event) = shared.borrow_mut().input.pop() {
+                            host.pointer_input(event.rescaled([request.width, request.height], [size.0, size.1]));
+                        }
                         host.service_hidden()?;
                         continue;
                     }
@@ -167,8 +168,16 @@ impl Worker {
                     // Do not submit more GPU work while every readback is still in
                     // flight. Slow/mobile adapters must apply backpressure upstream.
                     if ring.in_flight()<options.staging_frames {
+                        // Touch taps synthesize both edges together. Consume only
+                        // one per actual scene update, even under GPU backpressure.
+                        if let Some(event) = shared.borrow_mut().input.pop() {
+                            host.pointer_input(event.rescaled([request.width, request.height], [size.0, size.1]));
+                        }
                         if sequence==0 {report_stage("starting","Rendering the first Nightshade frame");}
                         host.render()?;
+                        if let Some(selected) = host.poll_pick() {
+                            report_viewport_selection(selected.map_or(-1., |id| id as f64));
+                        }
                         if sequence==0 {
                             report_stage("starting","Waiting for the first Nightshade scene render to complete on the GPU");
                             wait_for_gpu(&host.renderer().queue,&lost,"First Nightshade frame GPU work").await?;

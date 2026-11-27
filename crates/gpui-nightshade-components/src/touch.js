@@ -103,7 +103,9 @@ export function takeViewportTouch() {
   return result;
 }
 let pose;
-export function viewportTouchState() { return {bounds, pose, diagnostics}; }
+let selection = null;
+export function reportViewportSelection(id) { selection = id < 0 ? null : id; }
+export function viewportTouchState() { return {bounds, pose, diagnostics, selection}; }
 export function viewportTouchBounds(x,y,width,height,yaw,pitch,distance,tx,ty,tz) {
   bounds = [x,y,width,height];
   pose = {yaw,pitch,distance,target:[tx,ty,tz]};

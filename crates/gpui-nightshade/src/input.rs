@@ -52,6 +52,15 @@ pub struct PointerInput {
     pub control: bool,
     pub shift: bool,
 }
+impl PointerInput {
+    /// Map viewport physical pixels into the bounded presentation render target.
+    pub fn rescaled(mut self, from: [u32; 2], to: [u32; 2]) -> Self {
+        for axis in 0..2 {
+            self.position[axis] *= to[axis] as f32 / from[axis].max(1) as f32;
+        }
+        self
+    }
+}
 /// Ordered edges with latest-move coalescing. Overflow releases the gesture.
 #[derive(Default)]
 pub struct PointerQueue(std::collections::VecDeque<PointerInput>);
@@ -118,6 +127,22 @@ mod pointer_tests {
         }
         assert_eq!(queue.pop().unwrap().phase, Phase::Cancel);
         assert!(queue.is_empty());
+    }
+    #[test]
+    fn tap_edges_stay_separate_and_scale_to_the_render_target() {
+        let mut queue = PointerQueue::default();
+        queue.push(event(Phase::Press, 600.));
+        queue.push(event(Phase::Release, 600.));
+        let press = queue.pop().unwrap().rescaled([1200, 800], [600, 400]);
+        assert_eq!(press.phase, Phase::Press);
+        assert_eq!(press.position, [300., 0.]);
+        assert!(
+            !queue.is_empty(),
+            "release must wait for the next scene update"
+        );
+        let release = queue.pop().unwrap().rescaled([1200, 800], [600, 400]);
+        assert_eq!(release.phase, Phase::Release);
+        assert_eq!(release.position, press.position);
     }
 }
 
