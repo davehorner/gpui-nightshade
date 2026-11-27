@@ -4127,7 +4127,7 @@ index c8814f1..39d5971 100644
      (size as f32).log2().floor() as u32 + 1
 
 diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl
-index f88a25d..97aeb89 100644
+index f88a25d..44ee83d 100644
 --- a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/mesh.wgsl
 @@ -90,7 +90,11 @@ struct VertexOutput {
@@ -4142,19 +4142,22 @@ index f88a25d..97aeb89 100644
      @location(9) @interpolate(flat) world_scale_factor: f32,
      @location(10) prev_world_pos: vec3<f32>,
      @location(11) world_tangent: vec4<f32>,
-@@ -364,6 +368,11 @@ fn vs_main(
+@@ -364,6 +368,14 @@ fn vs_main(
      );
      out.view_normal = normalize(view_mat3 * world_normal);
  
 +    // Encode screen-linear values into perspective varyings. Fragment position.w
 +    // supplies the reciprocal interpolation denominator for exact reconstruction.
++    // Compact materials do not consume affine UVs; keep their vertex output unchanged.
 +#ifdef WEBGPU_PERSPECTIVE
++#ifndef WEB_COMPAT
 +    out.tex_coords_affine = out.tex_coords_affine * out.position.w;
++#endif
 +#endif
      return out;
  }
  
-@@ -832,8 +841,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
+@@ -832,8 +844,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
      return range_attenuation * spot_attenuation * light.color.rgb * cookie_tint;
  }
  
@@ -4170,7 +4173,7 @@ index f88a25d..97aeb89 100644
      let material_filter_scale = select(0.0, 1.0, uniforms.material_filtering != 0u);
      material_uv0_ddx = dpdx(in.tex_coords) * material_filter_scale;
      material_uv0_ddy = dpdy(in.tex_coords) * material_filter_scale;
-@@ -917,7 +933,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -917,7 +936,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
          vec4<f32>(1.0),
          sample_atlas_srgb(
              material.base_layer,
@@ -4179,7 +4182,7 @@ index f88a25d..97aeb89 100644
              in.tex_coords_1.x,
              material.atlas_cells,
              texture_uv_grad(material.base_transform),
-@@ -1548,3 +1564,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -1548,3 +1567,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
      output.view_normal = vec4<f32>(normalize(in.view_normal), reflectivity);
      return output;
  }
@@ -4252,7 +4255,7 @@ index a26b8bc..37eef08 100644
  }
 +#endif
 diff --git a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl
-index 84b0586..295ccd7 100644
+index 84b0586..1a180c2 100644
 --- a/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl
 +++ b/crates/plugins/draw/nightshade-wgpu-geometry/src/shaders/skinned_mesh.wgsl
 @@ -92,7 +92,11 @@ struct VertexOutput {
@@ -4267,19 +4270,22 @@ index 84b0586..295ccd7 100644
      @location(9) @interpolate(flat) world_scale_factor: f32,
      @location(10) world_tangent: vec4<f32>,
      @location(11) @interpolate(flat) entity_id: u32,
-@@ -387,6 +391,11 @@ fn vs_main(
+@@ -387,6 +391,14 @@ fn vs_main(
      );
      out.view_normal = normalize(view_mat3 * skinned_normal);
  
 +    // Encode screen-linear values into perspective varyings. Fragment position.w
 +    // supplies the reciprocal interpolation denominator for exact reconstruction.
++    // Compact materials do not consume affine UVs; keep their vertex output unchanged.
 +#ifdef WEBGPU_PERSPECTIVE
++#ifndef WEB_COMPAT
 +    out.tex_coords_affine = out.tex_coords_affine * out.position.w;
++#endif
 +#endif
      return out;
  }
  
-@@ -855,8 +864,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
+@@ -855,8 +867,15 @@ fn getLightIntensity(light: Light, point_to_light: vec3<f32>, world_pos: vec3<f3
      return range_attenuation * spot_attenuation * light.color.rgb * cookie_tint;
  }
  
@@ -4295,7 +4301,7 @@ index 84b0586..295ccd7 100644
      let material_filter_scale = select(0.0, 1.0, uniforms.material_filtering != 0u);
      material_uv0_ddx = dpdx(in.tex_coords) * material_filter_scale;
      material_uv0_ddy = dpdy(in.tex_coords) * material_filter_scale;
-@@ -940,7 +956,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -940,7 +959,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
          vec4<f32>(1.0),
          sample_atlas_srgb(
              material.base_layer,
@@ -4304,7 +4310,7 @@ index 84b0586..295ccd7 100644
              in.tex_coords_1.x,
              material.atlas_cells,
              texture_uv_grad(material.base_transform),
-@@ -1571,3 +1587,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
+@@ -1571,3 +1590,4 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) is_front_face: bool) -> Frag
      output.view_normal = vec4<f32>(normalize(in.view_normal), reflectivity);
      return output;
  }
