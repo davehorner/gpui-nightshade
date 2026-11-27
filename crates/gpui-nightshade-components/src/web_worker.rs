@@ -10,11 +10,13 @@ use gpui_nightshade::{
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 #[wasm_bindgen::prelude::wasm_bindgen(
-    inline_js = "export function reportNightshadeStage(stage,message) { window.dispatchEvent(new CustomEvent('nightshade-stage',{detail:{stage,message}})); }"
+    inline_js = "export function reportNightshadeStage(stage,message) { window.dispatchEvent(new CustomEvent('nightshade-stage',{detail:{stage,message}})); } export function gpuWaitNow() { return performance.now(); }"
 )]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name=reportNightshadeStage)]
     fn report_stage(stage: &str, message: &str);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name=gpuWaitNow)]
+    fn gpu_wait_now() -> f64;
 }
 #[derive(Clone, Copy, PartialEq)]
 pub struct ViewRequest {
@@ -99,7 +101,7 @@ impl Worker {
                     *report_error.lock().unwrap()=Some(format!("Nightshade WebGPU error: {error}"));
                 }));
                 report_stage("starting","Waiting for Nightshade startup rendering to complete on the GPU");
-                wait_for_gpu(&host.renderer().queue,&lost).await?;
+                wait_for_gpu(&host.renderer().queue,&lost,"Nightshade startup GPU work").await?;
                 let mut announced=false;
                 let mut size = (0, 0);
                 let mut generation = 0;
@@ -167,7 +169,7 @@ impl Worker {
                         host.render()?;
                         if sequence==0 {
                             report_stage("starting","Waiting for the first Nightshade scene render to complete on the GPU");
-                            wait_for_gpu(&host.renderer().queue,&lost).await?;
+                            wait_for_gpu(&host.renderer().queue,&lost,"First Nightshade frame GPU work").await?;
                             report_stage("starting","Copying the completed Nightshade frame for readback");
                         }
                         let renderer=host.renderer();
@@ -267,14 +269,26 @@ impl Drop for Worker {
 
 // During startup, separate rendering completion from texture copy/map. Submission
 // returning does not mean the GPU finished; a late loss must not blame readback.
-async fn wait_for_gpu(queue: &wgpu::Queue,error: &Arc<std::sync::Mutex<Option<String>>>) -> Result<(),Box<dyn std::error::Error>> {
+async fn wait_for_gpu(queue: &wgpu::Queue,error: &Arc<std::sync::Mutex<Option<String>>>,label: &str) -> Result<(),Box<dyn std::error::Error>> {
     use std::sync::atomic::{AtomicBool,Ordering};
     let done=Arc::new(AtomicBool::new(false));let flag=done.clone();
     queue.on_submitted_work_done(move || {flag.store(true,Ordering::Release);});
-    for _ in 0..1500 {
+    let started=gpu_wait_now();
+    let mut next_report=15_000.0;
+    loop {
         if let Some(message)=error.lock().unwrap().clone(){return Err(message.into());}
-        if done.load(Ordering::Acquire){return Ok(());}
+        let elapsed=gpu_wait_now()-started;
+        if done.load(Ordering::Acquire){
+            report_stage("starting",&format!("{label} completed in {:.1} seconds",elapsed/1000.0));
+            return Ok(());
+        }
+        if elapsed>=60_000.0 {
+            return Err(format!("{label} did not complete within 60 seconds; no first frame was presented").into());
+        }
+        if elapsed>=next_report {
+            report_stage("starting",&format!("Waiting for {label}: {:.0} seconds elapsed (60 second startup limit)",elapsed/1000.0));
+            next_report+=15_000.0;
+        }
         gloo_timers::future::TimeoutFuture::new(10).await;
     }
-    Err("Nightshade GPU work did not complete within 15 seconds; inspect gpu-check.html to isolate copy/readback".into())
 }
